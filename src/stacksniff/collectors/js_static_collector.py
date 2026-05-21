@@ -1,0 +1,187 @@
+"""Collect potential API endpoints from static JavaScript bundles and their source maps.
+
+Downloads JS files discovered on the page, runs patterns to identify endpoints,
+and inspects source maps if available.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import json
+import logging
+import re
+from urllib.parse import urljoin, urlparse
+
+import httpx
+
+from stacksniff.collectors.base import CollectorResult
+
+logger = logging.getLogger(__name__)
+
+# Regex patterns to search for API endpoints in JS bundles
+_REGEX_PATTERNS = [
+    re.compile(r'["\`](/api[^\s"\'`>]{2,80})["\`]'),
+    re.compile(r'fetch\(["\`]([^"\'`]{5,100})["\`]'),
+    re.compile(r'axios\.[a-z]+\(["\`]([^"\'`]{5,100})'),
+    re.compile(r'["\`](https?://[^"\'` ]{5,100}/api[^"\'` ]{2,60})["\`]'),
+]
+
+# Source map mapping comment regex
+_SOURCEMAP_REGEX = re.compile(r"(?://#|//@)\s*sourceMappingURL=(\S+)\s*$")
+
+_DEFAULT_TIMEOUT: float = 30.0
+
+
+class JsStaticCollector:
+    """Collector that parses static JS files and their source maps for API endpoints."""
+
+    def __init__(self, script_srcs: list[str], *, timeout: float = _DEFAULT_TIMEOUT) -> None:
+        self._script_srcs = script_srcs
+        self._timeout = timeout
+
+    async def collect(self, url: str) -> CollectorResult:
+        """Download scripts, scan for routes, inspect source maps, return findings."""
+        result = CollectorResult()
+        endpoints: set[str] = set()
+
+        # 1. Resolve relative URLs & Filter CDN domains
+        resolved_urls = []
+        for src in self._script_srcs:
+            if not src:
+                continue
+            src = src.strip()
+            # If already absolute (starts with http:// or https://)
+            resolved_url = src if src.startswith(("http://", "https://")) else urljoin(url, src)
+
+            try:
+                parsed = urlparse(resolved_url)
+                netloc = parsed.netloc.lower()
+            except Exception:
+                continue
+
+            cdn_domains = [
+                "googleapis.com",
+                "cdn.jsdelivr.net",
+                "unpkg.com",
+                "cdnjs.cloudflare.com",
+            ]
+            if any(cdn in netloc for cdn in cdn_domains):
+                continue
+
+            resolved_urls.append(resolved_url)
+
+        # Limit to max 8 script files
+        resolved_urls = resolved_urls[:8]
+
+        if not resolved_urls:
+            result.data = {"static_endpoints": []}
+            return result
+
+        # 2. Download and scan concurrently
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            verify=False,
+            timeout=self._timeout,
+        ) as client:
+            tasks = [
+                self._process_script(client, js_url, url, endpoints) for js_url in resolved_urls
+            ]
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        # 3. Deduplicate and normalize endpoints
+        normalized_endpoints: set[str] = set()
+        target_parsed = urlparse(url)
+        target_netloc = target_parsed.netloc.lower()
+
+        for ep in endpoints:
+            if not ep:
+                continue
+            ep = ep.strip()
+            if ep.startswith(("http://", "https://")):
+                try:
+                    ep_parsed = urlparse(ep)
+                    if ep_parsed.netloc.lower() == target_netloc:
+                        path = ep_parsed.path
+                        if ep_parsed.query:
+                            path += f"?{ep_parsed.query}"
+                        if not path.startswith("/"):
+                            path = f"/{path}"
+                        normalized_endpoints.add(path)
+                    else:
+                        normalized_endpoints.add(ep)
+                except Exception:
+                    normalized_endpoints.add(ep)
+            else:
+                normalized_endpoints.add(ep)
+
+        result.data = {"static_endpoints": sorted(list(normalized_endpoints))}
+        return result
+
+    async def _process_script(
+        self, client: httpx.AsyncClient, js_url: str, base_url: str, endpoints: set[str]
+    ) -> None:
+        """Download a single JS script, run regexes, and check for source maps."""
+        try:
+            response = await client.get(js_url)
+            if response.status_code != 200:
+                return
+        except Exception as exc:
+            logger.debug("Failed to download JS file from %s: %s", js_url, exc)
+            return
+
+        js_content = response.text
+
+        # Run regex patterns over JS bundle content
+        for pattern in _REGEX_PATTERNS:
+            for match in pattern.findall(js_content):
+                endpoints.add(match)
+
+        # Check for source maps (headers first, then comments)
+        source_map_url = None
+        lower_headers = {k.lower(): v for k, v in response.headers.items()}
+        x_sm = lower_headers.get("x-sourcemap")
+        sm = lower_headers.get("sourcemap")
+
+        if x_sm:
+            source_map_url = x_sm
+        elif sm:
+            source_map_url = sm
+
+        if not source_map_url:
+            match = _SOURCEMAP_REGEX.search(js_content)
+            if match:
+                source_map_url = match.group(1).strip()
+
+        if source_map_url:
+            map_content = None
+            if source_map_url.startswith("data:"):
+                try:
+                    if "base64," in source_map_url:
+                        b64_part = source_map_url.split("base64,")[1]
+                        map_content = base64.b64decode(b64_part).decode("utf-8", errors="ignore")
+                except Exception as b64_exc:
+                    logger.debug("Failed to decode inline source map: %s", b64_exc)
+            else:
+                map_resolved_url = urljoin(js_url, source_map_url)
+                try:
+                    map_res = await client.get(map_resolved_url)
+                    if map_res.status_code == 200:
+                        map_content = map_res.text
+                except Exception as fetch_exc:
+                    logger.debug(
+                        "Failed to fetch source map from %s: %s", map_resolved_url, fetch_exc
+                    )
+
+            if map_content:
+                try:
+                    map_json = json.loads(map_content)
+                    sources_content = map_json.get("sourcesContent", [])
+                    if isinstance(sources_content, list):
+                        for src_code in sources_content:
+                            if isinstance(src_code, str):
+                                for pattern in _REGEX_PATTERNS:
+                                    for match in pattern.findall(src_code):
+                                        endpoints.add(match)
+                except Exception as json_exc:
+                    logger.debug("Failed to parse source map JSON: %s", json_exc)
