@@ -37,9 +37,20 @@ uv sync
 ```
 
 ### Browser Setup
+
+Install the Playwright browser binaries:
 ```bash
-# Install Playwright Chromium binaries
 uv run playwright install chromium
+```
+
+**Linux (Ubuntu/Debian) System Dependencies:**
+If you run stacksniff on a headless Linux server or container, you may encounter missing system libraries for Chromium (e.g., `libnspr4.so`). If this happens, install the system dependencies using Playwright's helper or fall back to manual installation:
+```bash
+# Automatically install all required system libraries
+uv run playwright install-deps chromium
+
+# Fallback: manually install minimal required shared libraries
+sudo apt-get install -y libnspr4 libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2
 ```
 
 ### Build Fingerprints
