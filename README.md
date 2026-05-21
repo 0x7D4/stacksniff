@@ -31,7 +31,7 @@ Unlike commercial SaaS detection services, `stacksniff` runs entirely locally, r
 ### Clone & Install
 ```bash
 # Clone the repository and sync dependencies
-git clone https://github.com/stacksniff/stacksniff.git
+git clone https://github.com/0x7d4/stacksniff.git
 cd stacksniff
 uv sync
 ```
