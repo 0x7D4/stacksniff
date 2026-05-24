@@ -31,6 +31,8 @@ def mock_wappalyzer_http() -> Any:
                     "1": {"name": "CMS"},
                     "12": {"name": "JavaScript libraries"},
                     "19": {"name": "Web servers"},
+                    "41": {"name": "Payment processors"},
+                    "67": {"name": "Live chat"},
                 },
             )
         elif "a.json" in url_str:
@@ -57,6 +59,19 @@ def mock_wappalyzer_http() -> Any:
                         "cats": [12],
                         "website": "https://backbonejs.org",
                         "js": {"Backbone": "([\\d.]+)\\;version:\\1"},
+                    }
+                },
+            )
+        elif "p.json" in url_str:
+            # Contains a payment processor — non-standard category, must NOT collapse to 'other'
+            return httpx.Response(
+                200,
+                request=req,
+                json={
+                    "PayPal": {
+                        "cats": [41],
+                        "website": "https://paypal.com",
+                        "js": {"paypal": "."},
                     }
                 },
             )
@@ -100,7 +115,7 @@ async def test_fetch_and_convert_success(mock_wappalyzer_http: AsyncMock, tmp_pa
     result = await fetch_and_convert(target_yaml, timeout=10.0)
 
     # Validate counts
-    assert result.techs_added == 1  # "a-blog cms"
+    assert result.techs_added == 2  # "a-blog cms" + "PayPal"
     assert result.techs_updated == 1  # "Backbone.js" (matches lowercase "backbone.js")
     assert result.techs_preserved == 1  # "my-unique-tech" (not in upstream)
     assert result.output_path == target_yaml
@@ -126,11 +141,24 @@ async def test_fetch_and_convert_success(mock_wappalyzer_http: AsyncMock, tmp_pa
     assert ablog["meta"] == {"generator": "a-blog cms"}
     assert ablog["implies"] == ["PHP"]  # Cleaned from PHP\;confidence:50
 
+    # Verify non-standard Wappalyzer category passes through verbatim (not collapsed to 'other')
+    assert "paypal" in techs
+    paypal = techs["paypal"]
+    assert paypal["category"] == "payment-processors"  # cats: [41] -> Payment processors
+
+    # Verify the categories block contains all categories from the mock, as slugs
+    cats = written_data["categories"]
+    assert "cms" in cats
+    assert "javascript-libraries" in cats
+    assert "web-servers" in cats
+    assert "payment-processors" in cats
+    assert "live-chat" in cats
+
     # Verify Backbone.js merged (custom overrides win on conflict)
     assert "backbone.js" in techs
     backbone = techs["backbone.js"]
     assert backbone["name"] == "Backbone.js"  # Upstream name
-    assert backbone["category"] == "js-library"
+    assert backbone["category"] == "javascript-libraries"
     assert backbone["confidence"] == 0.99  # Preserved custom confidence
     assert backbone["js_globals"] == {"Backbone": "([\\d.]+)"}  # Suffix stripped
 
@@ -138,15 +166,21 @@ async def test_fetch_and_convert_success(mock_wappalyzer_http: AsyncMock, tmp_pa
     assert "my-unique-tech" in techs
     unique = techs["my-unique-tech"]
     assert unique["name"] == "My Unique Tech"
+    assert unique["category"] == "databases"  # Normalized from database
     assert unique["confidence"] == 0.95
     assert unique["headers"] == {"X-Unique": "unique-pattern"}
 
     # Load with FingerprintStore to verify compatibility
     store = FingerprintStore.from_yaml(target_yaml)
-    assert len(store.technologies) == 3
+    # 3 upstream (a-blog cms, backbone.js, paypal) + 1 preserved (my-unique-tech)
+    assert len(store.technologies) == 4
     assert "a-blog cms" in store.technologies
     assert "backbone.js" in store.technologies
+    assert "paypal" in store.technologies
     assert "my-unique-tech" in store.technologies
+    # Verify FingerprintStore resolves slugs to human-readable names
+    assert store.technologies["paypal"].category == "Payment processors"
+    assert store.technologies["a-blog cms"].category == "CMS"
 
 
 @pytest.mark.asyncio

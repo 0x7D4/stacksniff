@@ -64,9 +64,14 @@ class FingerprintStore:
 
             # Standardize tech key (lowercase) for lookup
             tech_key = name.lower()
+
+            cat_slug = data.get("category", "other")
+            cat_info = categories.get(cat_slug)
+            category_name = cat_info.get("name", cat_slug) if isinstance(cat_info, dict) else cat_slug
+
             technologies[tech_key] = Fingerprint(
                 name=data.get("name", name),  # fallback to key if name not specified
-                category=data.get("category", "other"),
+                category=category_name,
                 website=data.get("website"),
                 headers=data.get("headers", {}),
                 cookies=data.get("cookies", {}),
@@ -141,7 +146,7 @@ class FingerprintStore:
                 # Get implied technology details
                 implied_rule = self.technologies.get(implied_key)
                 implied_name = implied_rule.name if implied_rule else implied
-                implied_category = implied_rule.category if implied_rule else "other"
+                implied_category = implied_rule.category if implied_rule else ""
 
                 # Check if we already matched this tech
                 existing = match_map.get(implied_key)

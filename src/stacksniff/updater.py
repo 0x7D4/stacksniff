@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass, field
 from pathlib import Path  # noqa: TC003
 from typing import TYPE_CHECKING, Any
@@ -26,67 +27,50 @@ class UpdateResult:
     openapi_spec_found: bool = field(default=False)
 
 
-STANDARD_CATEGORIES = {
-    "web-server": {"name": "Web Server"},
-    "framework": {"name": "Web Framework"},
-    "cdn": {"name": "CDN"},
-    "cms": {"name": "CMS"},
-    "database": {"name": "Database"},
-    "js-library": {"name": "JavaScript Library"},
-    "analytics": {"name": "Analytics"},
-    "programming-language": {"name": "Programming Language"},
-    "other": {"name": "Other"},
+# Translation table for legacy hardcoded category slugs used in custom rules
+# written before the dynamic category system was introduced.
+_LEGACY_CATEGORY_MAP: dict[str, str] = {
+    "web-server": "web-servers",
+    "framework": "web-frameworks",
+    "cdn": "cdns",
+    "database": "databases",
+    "js-library": "javascript-libraries",
+    "programming-language": "programming-languages",
 }
 
 
-def map_category(cat_name: str) -> str:
-    """Map a Wappalyzer category name to a stacksniff category key."""
-    name_lower = cat_name.lower()
-    if "web server" in name_lower:
-        return "web-server"
-    if "framework" in name_lower:
-        return "framework"
-    if "cdn" in name_lower:
-        return "cdn"
-    if (
-        "cms" in name_lower
-        or "blog" in name_lower
-        or "web shop" in name_lower
-        or "ecommerce" in name_lower
-        or "wiki" in name_lower
-        or "message board" in name_lower
-    ):
-        return "cms"
-    if "database" in name_lower:
-        return "database"
-    if (
-        "javascript library" in name_lower
-        or "js library" in name_lower
-        or "javascript libraries" in name_lower
-    ):
-        return "js-library"
-    if "analytics" in name_lower or "tag manager" in name_lower:
-        return "analytics"
-    if "programming language" in name_lower:
-        return "programming-language"
-    return "other"
+def slugify_category(name: str) -> str:
+    """Convert a Wappalyzer category name to a lowercase hyphenated slug.
+
+    Examples
+    --------
+    "JavaScript libraries" -> "javascript-libraries"
+    "Payment processors"   -> "payment-processors"
+    "SSL/TLS certificate authorities" -> "ssl-tls-certificate-authorities"
+    """
+    s = name.lower()
+    s = re.sub(r"[^a-z0-9]+", "-", s)
+    return s.strip("-")
 
 
 def get_tech_category(cat_ids: list[int | str], categories_map: dict[str, Any]) -> str:
-    """Resolve a list of Wappalyzer category IDs to a single stacksniff category."""
-    mapped = []
-    for cid in cat_ids:
-        cid_str = str(cid)
-        cat_info = categories_map.get(cid_str)
-        if cat_info and "name" in cat_info:
-            mapped.append(map_category(cat_info["name"]))
+    """Resolve a list of Wappalyzer category IDs to a single category slug.
 
-    # Return the first non-other category, or fallback to the first mapped, or "other"
-    for cat in mapped:
-        if cat != "other":
-            return cat
-    if mapped:
-        return mapped[0]
+    Picks the category with the lowest priority number (most specific) when
+    multiple categories are assigned.  Returns ``"other"`` only when the
+    technology carries no ``cats`` entry or none of the IDs appear in the
+    fetched categories map.
+    """
+    resolved: list[tuple[int, str]] = []
+    for cid in cat_ids:
+        cat_info = categories_map.get(str(cid))
+        if cat_info and isinstance(cat_info, dict) and "name" in cat_info:
+            priority = cat_info.get("priority", 999)
+            resolved.append((priority, slugify_category(cat_info["name"])))
+
+    if resolved:
+        resolved.sort(key=lambda x: x[0])
+        return resolved[0][1]
     return "other"
 
 
@@ -375,9 +359,14 @@ async def fetch_and_convert(
 
     merged_technologies = {}
 
-    # 1. Add preserved custom rules (not present in upstream)
+    # 1. Add preserved custom rules (not present in upstream).
+    #    Translate any legacy category slugs written before the dynamic system.
     for custom_key, custom_data in custom_techs.items():
         if custom_key.lower() not in upstream_keys_lower:
+            if isinstance(custom_data, dict) and "category" in custom_data:
+                c_cat = custom_data["category"]
+                # Build a copy so we never mutate the dict read from the file
+                custom_data = {**custom_data, "category": _LEGACY_CATEGORY_MAP.get(c_cat, c_cat)}
             merged_technologies[custom_key] = custom_data
             techs_preserved += 1
 
@@ -449,9 +438,17 @@ async def fetch_and_convert(
             merged_technologies[upstream_key_lower] = upstream_data
 
     # 5. Output merged results
+    output_categories = {}
+    for cid, info in categories_map.items():
+        if isinstance(info, dict) and "name" in info:
+            slug = slugify_category(info["name"])
+            output_categories[slug] = {"name": info["name"]}
+    if "other" not in output_categories:
+        output_categories["other"] = {"name": "Other"}
+
     final_data = {
         "version": "1.0.0",
-        "categories": STANDARD_CATEGORIES,
+        "categories": output_categories,
         "technologies": merged_technologies,
     }
 
