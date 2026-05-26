@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import asyncio
+import io
+import sys
 from pathlib import Path  # noqa: TC003
 from typing import Any
 
@@ -15,10 +17,20 @@ from rich.table import Table
 
 from stacksniff import __version__
 from stacksniff.scanner import Scanner
-from stacksniff.updater import fetch_and_convert
+from stacksniff.updater import FullUpdateResult, fetch_and_convert
+from stacksniff.updater_seclists import fetch_seclists
 
-app = typer.Typer(help="stacksniff — detect web technology stacks and APIs")
-console = Console()
+app = typer.Typer(help="stacksniff -- detect web technology stacks and APIs")
+
+# Reconfigure stdout to UTF-8 on Windows to avoid UnicodeEncodeError from
+# Rich block/arrow characters in the legacy Windows console.
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001
+        pass
+
+console = Console(legacy_windows=False)
 
 
 def version_callback(value: bool) -> None:
@@ -220,8 +232,23 @@ def scan(
         ep_lines = []
         for ep in result.api_endpoints:
             ct_str = f" → [cyan]{ep.content_type}[/cyan]" if ep.content_type else ""
-            pat_str = f" [dim]({ep.pattern_matched})[/dim]" if ep.pattern_matched else ""
-            ep_lines.append(f"• [bold green]{ep.method:6}[/bold green] {ep.url}{ct_str}{pat_str}")
+            pm = ep.pattern_matched or ""
+            pat_str = f" [dim]({pm})[/dim]" if pm else ""
+
+            # Color-code SecLists endpoints by status_label embedded in pattern
+            if "SecLists/" in pm:
+                if "(auth-required)" in pm:
+                    method_fmt = f"[AUTH] [yellow]{ep.method:6}[/yellow]"
+                elif "(forbidden)" in pm:
+                    method_fmt = f"[DENY] [dim]{ep.method:6}[/dim]"
+                elif "redirect" in pm.lower():
+                    method_fmt = f"[-->] [dim cyan]{ep.method:6}[/dim cyan]"
+                else:  # exposed (200)
+                    method_fmt = f"[bold green]{ep.method:6}[/bold green]"
+            else:
+                method_fmt = f"[bold green]{ep.method:6}[/bold green]"
+
+            ep_lines.append(f"• {method_fmt} {ep.url}{ct_str}{pat_str}")
         endpoints_panel = Panel(
             "\n".join(ep_lines),
             title=panel_title,
@@ -238,7 +265,91 @@ def scan(
 
     console.print(endpoints_panel)
 
-    # 3. Footer
+    # 3. External Domain Dependencies table
+    ext_deps = getattr(result, "external_dependencies", [])
+    if ext_deps:
+        _category_color = {
+            "cdn": "blue",
+            "analytics": "yellow",
+            "security": "green",
+            "maps": "cyan",
+            "advertising": "magenta",
+        }
+
+        ext_table = Table(
+            title="External Domain Dependencies",
+            box=None,
+            show_header=True,
+            header_style="bold blue",
+        )
+        ext_table.add_column("Domain", style="bold")
+        ext_table.add_column("Technology")
+        ext_table.add_column("Category")
+        ext_table.add_column("Types", style="dim")
+        ext_table.add_column("Requests", justify="right")
+
+        for dep in sorted(ext_deps, key=lambda d: -d.get("request_count", 0)):
+            cat = dep.get("category", "Unclassified")
+            cat_lower = cat.lower()
+            color = next(
+                (v for k, v in _category_color.items() if k in cat_lower),
+                "dim",
+            )
+            tech_name = dep.get("technology_name") or ""
+            types_str = ", ".join(dep.get("resource_types", []))
+            ext_table.add_row(
+                dep.get("domain", ""),
+                tech_name,
+                f"[{color}]{cat}[/{color}]",
+                types_str,
+                str(dep.get("request_count", 0)),
+            )
+
+        console.print()
+        console.print(ext_table)
+
+    # 4. Internal Domain Dependencies table (CT logs)
+    int_subs = getattr(result, "internal_subdomains", [])
+    console.print()
+    int_table = Table(
+        title="Internal Domain Dependencies (via CT logs)",
+        box=None,
+        show_header=True,
+        header_style="bold blue",
+    )
+    int_table.add_column("Subdomain", style="bold")
+    int_table.add_column("Status", justify="center")
+    int_table.add_column("Technology")
+    int_table.add_column("Response Time", justify="right", style="dim")
+
+    if int_subs:
+        for sub in int_subs:
+            status = sub.get("status_code", 0)
+            if status == 200:
+                status_fmt = "[green]200[/green]"
+            elif status in {301, 302, 307, 308}:
+                status_fmt = f"[cyan]{status}[/cyan]"
+            elif status in {401, 403}:
+                status_fmt = f"[yellow]{status}[/yellow]"
+            else:
+                status_fmt = str(status)
+
+            tech = sub.get("detected_tech") or ""
+            rtime = f"{sub.get('response_time_ms', 0):.0f}ms"
+            subdomain_str = sub.get("subdomain", "")
+
+            # Inline redirect for 301/302
+            redirect = sub.get("redirect_location")
+            if redirect and status in {301, 302, 307, 308}:
+                subdomain_str += f" → [dim]{redirect}[/dim]"
+
+            int_table.add_row(subdomain_str, status_fmt, tech, rtime)
+    else:
+        int_table.add_row("[dim]No subdomains found in CT logs[/dim]", "", "", "")
+
+    console.print(int_table)
+
+    # 5. Footer
     footer_text = (
         f"\n[bold blue]Scanned in {result.meta.duration_seconds:.1f}s | "
         f"{len(result.technologies)} technologies | "
@@ -273,7 +384,7 @@ def update_fingerprints(
         # Bundled path is fingerprints/tech.yaml at repository root
         output = Path(__file__).parents[2] / "fingerprints" / "tech.yaml"
 
-    async def run_update(target_path: Path) -> Any:
+    async def run_update(target_path: Path) -> FullUpdateResult:
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -292,11 +403,18 @@ def update_fingerprints(
                     description=f"[yellow]Fetching rules: {char}.json",
                 )
 
-            return await fetch_and_convert(
+            wappalyzer_result = await fetch_and_convert(
                 target_path,
                 timeout=timeout,
                 progress_callback=progress_cb,
             )
+
+            # Fetch SecLists wordlists after Wappalyzer completes
+            progress.update(task, description="[yellow]Fetching SecLists wordlists...")
+            seclists_dir = target_path.parent / "seclists"
+            seclists_result = await fetch_seclists(seclists_dir, timeout=timeout)
+
+        return FullUpdateResult(wappalyzer=wappalyzer_result, seclists=seclists_result)
 
     console.print(
         Panel(
@@ -310,9 +428,12 @@ def update_fingerprints(
 
         with tempfile.TemporaryDirectory() as tmpdir:
             temp_path = Path(tmpdir) / "tech.yaml"
-            result = asyncio.run(run_update(temp_path))
+            full_result = asyncio.run(run_update(temp_path))
     else:
-        result = asyncio.run(run_update(output))
+        full_result = asyncio.run(run_update(output))
+
+    result = full_result.wappalyzer
+    seclists = full_result.seclists
 
     # Show results table
     table = Table(
@@ -331,6 +452,8 @@ def update_fingerprints(
     table.add_row("Total Technologies", f"[bold]{total_rules}[/bold]")
     if getattr(result, "openapi_spec_found", False):
         table.add_row("Full API spec found", "[green]Yes[/green]")
+    table.add_row("SecLists Files Fetched", f"[magenta]{seclists.files_fetched}[/magenta]")
+    table.add_row("SecLists Total Paths", f"[magenta]{seclists.total_paths}[/magenta]")
 
     console.print(table)
     console.print()
@@ -340,6 +463,9 @@ def update_fingerprints(
     else:
         console.print(
             f"[bold green]Successfully wrote fingerprints to {result.output_path}[/bold green]"
+        )
+        console.print(
+            f"[bold green]SecLists wordlists written to {seclists.output_dir}[/bold green]"
         )
 
 

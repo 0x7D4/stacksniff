@@ -49,6 +49,7 @@ desktop.ini
 
 # Project-specific
 fingerprints/tech.yaml
+fingerprints/seclists/
 *.json
 scratch/
 

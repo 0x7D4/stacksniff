@@ -2,6 +2,7 @@
 
 from stacksniff.collectors.base import Collector, CollectorResult, NetworkRequest
 from stacksniff.collectors.cookie_collector import CookieCollector
+from stacksniff.collectors.framework_prober import FrameworkProber
 from stacksniff.collectors.header_collector import HeaderCollector
 from stacksniff.collectors.html_collector import HtmlCollector
 from stacksniff.collectors.js_collector import JsCollector
@@ -12,6 +13,7 @@ __all__ = [
     "Collector",
     "CollectorResult",
     "CookieCollector",
+    "FrameworkProber",
     "HeaderCollector",
     "HtmlCollector",
     "JsCollector",

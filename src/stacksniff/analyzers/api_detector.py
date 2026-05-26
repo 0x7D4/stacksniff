@@ -11,6 +11,45 @@ from stacksniff.models import DetectedEndpoint
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Known third-party domains whose requests must never appear in results.
+# This is a defence-in-depth layer: Fix 1 (NetworkCollector same-origin filter)
+# and Fix 2 (JsStaticCollector domain filter) should catch most cases at the
+# source, but this set catches anything that slips through to the detector.
+# ---------------------------------------------------------------------------
+THIRD_PARTY_DOMAINS: frozenset[str] = frozenset({
+    "googleapis.com",
+    "google.com",
+    "gstatic.com",
+    "googletagmanager.com",
+    "doubleclick.net",
+    "facebook.net",
+    "facebook.com",
+    "twitter.com",
+    "analytics.google.com",
+    "maps.googleapis.com",
+    "cloudflare.com",
+    "jsdelivr.net",
+    "cdnjs.cloudflare.com",
+    "jquery.com",
+    "bootstrapcdn.com",
+    "unpkg.com",
+})
+
+
+def _is_third_party_url(url_str: str) -> bool:
+    """Return True if *url_str* is an absolute URL pointing to a known third-party domain."""
+    if not url_str.startswith(("http://", "https://")):
+        # Relative paths are always target-domain — keep them.
+        return False
+    try:
+        netloc = urlparse(url_str).netloc.lower()
+    except Exception:
+        return False
+    # Strip port, if any
+    host = netloc.split(":")[0]
+    return any(host == d or host.endswith("." + d) for d in THIRD_PARTY_DOMAINS)
+
 # Pattern regexes mapped to category names
 _API_PATTERNS = {
     re.compile(r"/api/v\d", re.IGNORECASE): "REST API (Versioned)",
@@ -133,6 +172,11 @@ class ApiDetector:
             else:
                 continue
 
+            # Defence-in-depth: skip known third-party absolute URLs
+            if _is_third_party_url(url):
+                logger.debug("ApiDetector: skipping third-party URL %s", url)
+                continue
+
             # Match path against API patterns
             matched_pattern = None
             for rx, label in _API_PATTERNS.items():
@@ -236,5 +280,41 @@ class ApiDetector:
                 existing = detected_map.get(path)
                 if not existing or endpoint.confidence > existing.confidence:
                     detected_map[path] = endpoint
+
+        # 4. Process Framework Endpoints (SecLists-sourced probes)
+        framework_endpoints: list[Any] = []
+        if hasattr(evidence_data, "framework_endpoints"):
+            framework_endpoints = getattr(evidence_data, "framework_endpoints", []) or []
+        elif isinstance(evidence_data, dict):
+            framework_endpoints = evidence_data.get("framework_endpoints", []) or []
+
+        for ep in framework_endpoints:
+            if not isinstance(ep, dict):
+                continue
+
+            url = ep.get("url", "")
+            if not url:
+                continue
+
+            path = _normalize_path(url)
+            source_wl = ep.get("source_wordlist", "unknown.txt")
+            label = ep.get("status_label", "exposed")
+            confidence = float(ep.get("confidence", 0.8))
+            content_type = ep.get("content_type")
+
+            pattern_matched = f"SecLists/{source_wl}"
+            if label in ("auth-required", "forbidden"):
+                pattern_matched += f" ({label})"
+
+            endpoint = DetectedEndpoint(
+                url=path,
+                method="GET",
+                content_type=content_type,
+                pattern_matched=pattern_matched,
+                confidence=confidence,
+            )
+            existing = detected_map.get(path)
+            if not existing or endpoint.confidence > existing.confidence:
+                detected_map[path] = endpoint
 
         return list(detected_map.values())

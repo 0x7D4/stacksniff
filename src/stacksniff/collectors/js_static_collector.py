@@ -34,11 +34,35 @@ _DEFAULT_TIMEOUT: float = 30.0
 
 
 class JsStaticCollector:
-    """Collector that parses static JS files and their source maps for API endpoints."""
+    """Collector that parses static JS files and their source maps for API endpoints.
 
-    def __init__(self, script_srcs: list[str], *, timeout: float = _DEFAULT_TIMEOUT) -> None:
+    Parameters
+    ----------
+    script_srcs:
+        List of ``<script src>`` values extracted from the page HTML.
+    base_url:
+        The target page URL.  Used to resolve relative script paths **and** to
+        filter out absolute endpoint candidates that point to a different domain.
+        Defaults to an empty string (no domain filtering).
+    timeout:
+        HTTP timeout in seconds for downloading JS files.
+    """
+
+    def __init__(
+        self,
+        script_srcs: list[str],
+        *,
+        base_url: str = "",
+        timeout: float = _DEFAULT_TIMEOUT,
+    ) -> None:
         self._script_srcs = script_srcs
+        self._base_url = base_url
         self._timeout = timeout
+        # Pre-parse target netloc once; empty string means "don't filter"
+        try:
+            self._target_netloc: str = urlparse(base_url).netloc.lower() if base_url else ""
+        except Exception:
+            self._target_netloc = ""
 
     async def collect(self, url: str) -> CollectorResult:
         """Download scripts, scan for routes, inspect source maps, return findings."""
@@ -91,29 +115,47 @@ class JsStaticCollector:
 
         # 3. Deduplicate and normalize endpoints
         normalized_endpoints: set[str] = set()
-        target_parsed = urlparse(url)
-        target_netloc = target_parsed.netloc.lower()
+        target_netloc = self._target_netloc
 
         for ep in endpoints:
             if not ep:
                 continue
             ep = ep.strip()
+
             if ep.startswith(("http://", "https://")):
+                # Absolute URL: keep only if it matches the target domain
+                # (or if we have no target domain configured).  Convert to
+                # a root-relative path by stripping scheme + netloc.
                 try:
                     ep_parsed = urlparse(ep)
-                    if ep_parsed.netloc.lower() == target_netloc:
-                        path = ep_parsed.path
-                        if ep_parsed.query:
-                            path += f"?{ep_parsed.query}"
-                        if not path.startswith("/"):
-                            path = f"/{path}"
-                        normalized_endpoints.add(path)
-                    else:
-                        normalized_endpoints.add(ep)
+                    ep_netloc = ep_parsed.netloc.lower()
                 except Exception:
-                    normalized_endpoints.add(ep)
-            else:
+                    continue  # malformed — discard
+
+                if target_netloc and not _is_first_party(ep_netloc, target_netloc):
+                    # Different domain — discard (Fix 2)
+                    logger.debug(
+                        "JsStaticCollector: discarding cross-domain endpoint %s", ep
+                    )
+                    continue
+
+                # Same domain (or no domain filter) → strip to relative path
+                path = ep_parsed.path
+                if ep_parsed.query:
+                    path += f"?{ep_parsed.query}"
+                if not path.startswith("/"):
+                    path = f"/{path}"
+                normalized_endpoints.add(path)
+
+            elif ep.startswith("/") and not ep.startswith("//"):
+                # Root-relative path — always keep as-is
                 normalized_endpoints.add(ep)
+
+            else:
+                # Protocol-relative (//), data:, blob:, bare word, etc. — discard
+                logger.debug(
+                    "JsStaticCollector: discarding non-relative/non-http candidate %s", ep
+                )
 
         result.data = {"static_endpoints": sorted(list(normalized_endpoints))}
         return result
@@ -185,3 +227,29 @@ class JsStaticCollector:
                                         endpoints.add(match)
                 except Exception as json_exc:
                     logger.debug("Failed to parse source map JSON: %s", json_exc)
+
+
+# ------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------
+
+
+def _get_apex_domain(host: str) -> str:
+    host = host.lower().split(":")[0]
+    parts = host.split(".")
+    if len(parts) == 4 and all(p.isdigit() for p in parts):
+        return host
+    if len(parts) >= 3:
+        second_last = parts[-2]
+        last = parts[-1]
+        if len(second_last) <= 3 and len(last) == 2:
+            return ".".join(parts[-3:])
+    return ".".join(parts[-2:]) if len(parts) >= 2 else host
+
+
+def _is_first_party(host1: str, host2: str) -> bool:
+    h1 = host1.lower().split(":")[0].removeprefix("www.")
+    h2 = host2.lower().split(":")[0].removeprefix("www.")
+    if h1 == h2:
+        return True
+    return _get_apex_domain(h1) == _get_apex_domain(h2)

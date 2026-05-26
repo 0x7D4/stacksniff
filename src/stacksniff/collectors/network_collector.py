@@ -199,6 +199,9 @@ class NetworkCollector:
                     crawled_count = 0
                     start_time = time.monotonic()
 
+                    # Pre-parse target netloc for same-origin filtering
+                    _target_netloc = urlparse(url).netloc.lower()
+
                     while queue:
                         elapsed = time.monotonic() - start_time
                         remaining = self._timeout - elapsed
@@ -282,6 +285,35 @@ class NetworkCollector:
                             if req_obj and hasattr(req_obj, "timing"):
                                 timing_data = req_obj.timing or {}
 
+                        har_entry = {
+                            "url": entry["url"],
+                            "method": entry["method"],
+                            "status": entry.get("status"),
+                            "content_type": entry.get("content_type"),
+                            "request_headers": entry.get("request_headers", {}),
+                            "response_headers": entry.get("response_headers", {}),
+                            "timing": timing_data,
+                            "resource_type": entry.get("resource_type"),
+                        }
+                        har_entries.append(har_entry)
+
+                        # Same-origin filter (Fix 1): only keep XHR/fetch requests
+                        # that go TO the target domain or its subdomains. Third-party
+                        # calls fired by analytics/maps/CDN scripts are silently discarded.
+                        # Probe entries (resource_type="probe") always pass through.
+                        entry_rtype = entry.get("resource_type", "")
+                        if entry_rtype != "probe":
+                            try:
+                                entry_netloc = urlparse(entry["url"]).netloc.lower()
+                            except Exception:
+                                entry_netloc = ""
+                            if entry_netloc and not _is_first_party(entry_netloc, _target_netloc):
+                                logger.debug(
+                                    "NetworkCollector: skipping cross-origin request %s",
+                                    entry["url"],
+                                )
+                                continue
+
                         nr = NetworkRequest(
                             url=entry["url"],
                             method=entry["method"],
@@ -292,17 +324,6 @@ class NetworkCollector:
                             response_headers=entry.get("response_headers", {}),
                         )
                         captured.append(_nr_to_dict(nr))
-
-                        har_entry = {
-                            "url": entry["url"],
-                            "method": entry["method"],
-                            "status": entry.get("status"),
-                            "content_type": entry.get("content_type"),
-                            "request_headers": entry.get("request_headers", {}),
-                            "response_headers": entry.get("response_headers", {}),
-                            "timing": timing_data,
-                        }
-                        har_entries.append(har_entry)
 
                 finally:
                     await browser.close()
@@ -430,19 +451,29 @@ class NetworkCollector:
         full_url = urljoin(base_url, path)
         try:
             resp = await client.get(full_url)
+            status = resp.status_code
 
             # Only keep responses that look "real" (not generic 404 pages)
-            if resp.status_code >= 400:
+            if status >= 400:
                 return None
 
-            content_type = resp.headers.get("content-type", "")
+            content_type = resp.headers.get("content-type", "") or ""
+            ct_lower = content_type.lower().strip()
+
+            # Content-type filtering (Fix 2)
+            if status == 200 and ct_lower.startswith("text/html"):
+                try:
+                    json.loads(resp.text)
+                except (json.JSONDecodeError, ValueError, Exception):
+                    return None
+
             resp_headers = {k.lower(): v for k, v in resp.headers.items()}
 
             nr = NetworkRequest(
                 url=full_url,
                 method="GET",
                 resource_type="probe",
-                status=resp.status_code,
+                status=status,
                 content_type=content_type,
                 request_headers={},
                 response_headers=resp_headers,
@@ -461,6 +492,27 @@ class NetworkCollector:
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
+
+
+def _get_apex_domain(host: str) -> str:
+    host = host.lower().split(":")[0]
+    parts = host.split(".")
+    if len(parts) == 4 and all(p.isdigit() for p in parts):
+        return host
+    if len(parts) >= 3:
+        second_last = parts[-2]
+        last = parts[-1]
+        if len(second_last) <= 3 and len(last) == 2:
+            return ".".join(parts[-3:])
+    return ".".join(parts[-2:]) if len(parts) >= 2 else host
+
+
+def _is_first_party(host1: str, host2: str) -> bool:
+    h1 = host1.lower().split(":")[0].removeprefix("www.")
+    h2 = host2.lower().split(":")[0].removeprefix("www.")
+    if h1 == h2:
+        return True
+    return _get_apex_domain(h1) == _get_apex_domain(h2)
 
 
 def _nr_to_dict(nr: NetworkRequest) -> dict:

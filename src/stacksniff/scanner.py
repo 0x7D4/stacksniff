@@ -14,6 +14,8 @@ from stacksniff.analyzers.api_detector import ApiDetector
 from stacksniff.analyzers.fingerprint_matcher import FingerprintMatcher
 from stacksniff.collectors.base import CollectorResult, NetworkRequest
 from stacksniff.collectors.cookie_collector import CookieCollector
+from stacksniff.collectors.domain_mapper import DomainMapper
+from stacksniff.collectors.framework_prober import FrameworkProber
 from stacksniff.collectors.header_collector import HeaderCollector
 from stacksniff.collectors.html_collector import HtmlCollector
 from stacksniff.collectors.js_collector import JsCollector
@@ -101,7 +103,7 @@ class Scanner:
         dom_evidence = html_ok.data.get("dom", {}).copy()
 
         # Run JsStaticCollector in a second gather - chained after HtmlCollector
-        js_static_collector = JsStaticCollector(script_srcs, timeout=timeout)
+        js_static_collector = JsStaticCollector(script_srcs, base_url=url, timeout=timeout)
         js_static_res_list = await asyncio.gather(
             js_static_collector.collect(url), return_exceptions=True
         )
@@ -143,6 +145,8 @@ class Scanner:
 
             js_ok = _safe_res(js_res)
             net_ok = _safe_res(net_res)
+
+            logger.debug("har_entries count: %d", len(net_ok.data.get("har_entries", [])))
 
             js_globals = js_ok.data.get("js_globals", {})
 
@@ -227,7 +231,9 @@ class Scanner:
         )
 
         # -------------------------------------------------------------------
-        # Phase 3: Match fingerprints & detect APIs
+        # Phase 3: Match fingerprints & detect APIs  +  Domain mapping
+        # (run concurrently — domain mapper is pure I/O, independent of
+        #  fingerprint matching)
         # -------------------------------------------------------------------
         evidence_dict = {
             "headers": evidence.headers,
@@ -242,6 +248,52 @@ class Scanner:
 
         matcher = FingerprintMatcher(store)
         tech_matches = matcher.match(evidence_dict)
+
+        # -------------------------------------------------------------------
+        # Phase 3.5: SecLists-based framework path probing  +  Domain mapping
+        # Run both concurrently.
+        # -------------------------------------------------------------------
+        if progress_callback:
+            progress_callback("framework_probe", "started")
+
+        # Collect HAR entries produced during browser phase
+        har_entries: list[dict] = []
+        if browser and playwright_installed:
+            har_entries = net_ok.data.get("har_entries", [])
+
+        prober = FrameworkProber(tech_matches, url, timeout=timeout)
+        domain_mapper = DomainMapper(
+            base_url=url,
+            har_entries=har_entries,
+            fingerprint_store=store,
+            timeout=timeout,
+        )
+
+        probe_result_raw, domain_result_raw = await asyncio.gather(
+            prober.collect(),
+            domain_mapper.collect(),
+            return_exceptions=True,
+        )
+
+        if isinstance(probe_result_raw, Exception):
+            logger.error("FrameworkProber raised: %s", probe_result_raw)
+            probe_result: CollectorResult = CollectorResult()
+        else:
+            probe_result = probe_result_raw
+
+        if isinstance(domain_result_raw, Exception):
+            logger.error("DomainMapper raised: %s", domain_result_raw)
+            domain_result: CollectorResult = CollectorResult()
+        else:
+            domain_result = domain_result_raw
+
+        framework_endpoints = probe_result.data.get("framework_endpoints", [])
+        evidence.framework_endpoints = framework_endpoints
+        evidence.external_dependencies = domain_result.data.get("external_dependencies", [])
+        evidence.internal_subdomains = domain_result.data.get("internal_subdomains", [])
+
+        if progress_callback:
+            progress_callback("framework_probe", "completed")
 
         detector = ApiDetector()
         detected_endpoints = detector.detect(evidence)
@@ -264,6 +316,8 @@ class Scanner:
             api_endpoints=detected_endpoints,
             meta=meta,
             openapi_spec_found=bool(evidence.spec_endpoints),
+            external_dependencies=evidence.external_dependencies,
+            internal_subdomains=evidence.internal_subdomains,
         )
 
 

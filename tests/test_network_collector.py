@@ -217,3 +217,133 @@ async def test_network_collector_har_timing_capture(mock_playwright) -> None:
     assert entry["request_headers"] == {"X-Test": "req-val"}
     assert entry["response_headers"] == {"Content-Type": "application/json", "X-Custom": "resp-val"}
     assert entry["timing"] == {"startTime": 200.0, "responseEnd": 250.0}
+
+
+@pytest.mark.asyncio
+async def test_cross_origin_requests_excluded(mock_playwright) -> None:
+    """Cross-origin XHR/fetch requests must not appear in CollectorResult network_requests.
+
+    When the browser fires a request to maps.googleapis.com (or any domain that is
+    not the scan target), the NetworkCollector same-origin filter must discard it so
+    it never reaches the ApiDetector.
+    """
+    page = mock_playwright["page"]
+
+    collector = NetworkCollector(timeout=10.0, max_crawl_depth=0)
+    with patch.object(collector, "_probe_paths", new_callable=AsyncMock) as mock_probe:
+        mock_probe.return_value = ([], [], None, [])
+
+        async def mock_goto(*args, **kwargs):
+            request_cb = None
+            response_cb = None
+            for call_arg in page.on.call_args_list:
+                call_args, _ = call_arg
+                if call_args[0] == "request":
+                    request_cb = call_args[1]
+                elif call_args[0] == "response":
+                    response_cb = call_args[1]
+
+            if request_cb and response_cb:
+                # Same-origin request — should be kept
+                same_origin_req = MockRequest(
+                    url="https://example.com/api/v1/users",
+                    method="GET",
+                    rtype="xhr",
+                )
+                same_origin_resp = MockResponse(
+                    request=same_origin_req,
+                    status=200,
+                    headers={"Content-Type": "application/json"},
+                )
+                request_cb(same_origin_req)
+                response_cb(same_origin_resp)
+
+                # Cross-origin request to Google Maps — must be discarded
+                cross_origin_req = MockRequest(
+                    url="https://maps.googleapis.com/maps/api/mapsjs/gen_204",
+                    method="GET",
+                    rtype="xhr",
+                )
+                cross_origin_resp = MockResponse(
+                    request=cross_origin_req,
+                    status=204,
+                    headers={},
+                )
+                request_cb(cross_origin_req)
+                response_cb(cross_origin_resp)
+
+        page.goto.side_effect = mock_goto
+        result = await collector.collect("https://example.com")
+
+    network_requests = result.data.get("network_requests", [])
+    request_urls = [r["url"] for r in network_requests]
+
+    # Same-origin request must be present
+    assert "https://example.com/api/v1/users" in request_urls, (
+        f"Same-origin request missing from results: {request_urls}"
+    )
+
+    # Cross-origin Google Maps request must be absent
+    assert not any("googleapis" in u for u in request_urls), (
+        f"Cross-origin googleapis URL leaked into network_requests: {request_urls}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_subdomain_requests_included(mock_playwright) -> None:
+    """Requests targeting subdomains of the target domain must be kept in network_requests."""
+    page = mock_playwright["page"]
+
+    collector = NetworkCollector(timeout=10.0, max_crawl_depth=0)
+    with patch.object(collector, "_probe_paths", new_callable=AsyncMock) as mock_probe:
+        mock_probe.return_value = ([], [], None, [])
+
+        async def mock_goto(*args, **kwargs):
+            request_cb = None
+            response_cb = None
+            for call_arg in page.on.call_args_list:
+                call_args, _ = call_arg
+                if call_args[0] == "request":
+                    request_cb = call_args[1]
+                elif call_args[0] == "response":
+                    response_cb = call_args[1]
+
+            if request_cb and response_cb:
+                # Subdomain request — should be kept
+                subdomain_req = MockRequest(
+                    url="https://api.example.com/api/v1/users",
+                    method="GET",
+                    rtype="xhr",
+                )
+                subdomain_resp = MockResponse(
+                    request=subdomain_req,
+                    status=200,
+                    headers={"Content-Type": "application/json"},
+                )
+                request_cb(subdomain_req)
+                response_cb(subdomain_resp)
+
+                # Cross-origin request — must be discarded
+                cross_origin_req = MockRequest(
+                    url="https://google.com/api/v1",
+                    method="GET",
+                    rtype="xhr",
+                )
+                cross_origin_resp = MockResponse(
+                    request=cross_origin_req,
+                    status=200,
+                )
+                request_cb(cross_origin_req)
+                response_cb(cross_origin_resp)
+
+        page.goto.side_effect = mock_goto
+        result = await collector.collect("https://example.com")
+
+    network_requests = result.data.get("network_requests", [])
+    request_urls = [r["url"] for r in network_requests]
+
+    # Subdomain request must be present
+    assert "https://api.example.com/api/v1/users" in request_urls
+    
+    # Cross-origin request must be absent
+    assert "https://google.com/api/v1" not in request_urls

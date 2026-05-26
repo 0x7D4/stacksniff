@@ -11,13 +11,15 @@ from typing import TYPE_CHECKING, Any
 import httpx
 import yaml
 
+from stacksniff.updater_seclists import SeclistsUpdateResult, fetch_seclists
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 
 @dataclass(frozen=True, slots=True)
 class UpdateResult:
-    """Result of the update-fingerprints execution."""
+    """Result of the Wappalyzer fingerprint update."""
 
     techs_added: int
     techs_updated: int
@@ -25,6 +27,24 @@ class UpdateResult:
     output_path: Path
     source_url: str
     openapi_spec_found: bool = field(default=False)
+
+
+@dataclass(frozen=True, slots=True)
+class FullUpdateResult:
+    """Combined result of both the Wappalyzer and SecLists update steps."""
+
+    wappalyzer: UpdateResult
+    seclists: SeclistsUpdateResult
+
+
+# Re-export for consumers that import from this module
+__all__ = [
+    "UpdateResult",
+    "FullUpdateResult",
+    "SeclistsUpdateResult",
+    "fetch_and_convert",
+    "fetch_seclists",
+]
 
 
 # Translation table for legacy hardcoded category slugs used in custom rules

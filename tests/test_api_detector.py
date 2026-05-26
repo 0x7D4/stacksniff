@@ -169,3 +169,49 @@ def test_api_detector_static_endpoints() -> None:
     assert graphql_ep is not None
     assert graphql_ep.confidence == 0.65
     assert graphql_ep.pattern_matched == "GraphQL Endpoint"
+
+
+def test_third_party_absolute_url_filtered() -> None:
+    """Third-party absolute URLs (e.g. googleapis.com) must be silently dropped.
+
+    Even if a URL matches an API pattern (it contains /api/), it must not appear
+    in detect() output when its host is a known third-party domain.
+    """
+    detector = ApiDetector()
+
+    evidence = {
+        "network_requests": [
+            # Google Maps internal telemetry — must be filtered
+            {
+                "url": "https://maps.googleapis.com/maps/api/mapsjs/gen_204",
+                "method": "GET",
+                "content_type": "application/json",
+            },
+            # Another known third-party
+            {
+                "url": "https://www.googletagmanager.com/api/config/GTM-XXXX",
+                "method": "GET",
+                "content_type": "application/json",
+            },
+            # Same-origin target endpoint — must survive
+            {
+                "url": "https://aiori.in/api/anchor/list",
+                "method": "GET",
+                "content_type": "application/json",
+            },
+        ]
+    }
+
+    endpoints = detector.detect(evidence)
+    urls = [e.url for e in endpoints]
+
+    # Third-party URLs must be absent
+    assert not any("googleapis" in u for u in urls), (
+        f"googleapis URL leaked into results: {urls}"
+    )
+    assert not any("googletagmanager" in u for u in urls), (
+        f"googletagmanager URL leaked into results: {urls}"
+    )
+
+    # Same-origin endpoint must be present
+    assert "/api/anchor/list" in urls, f"Expected /api/anchor/list in {urls}"
