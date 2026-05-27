@@ -50,15 +50,15 @@ def _har(url: str, resource_type: str = "script") -> dict:
 
 @pytest.mark.asyncio
 async def test_external_category_from_fingerprint_store() -> None:
-    """External domain classified using FingerprintStore scripts pattern.
+    """External domain classified via script literal pattern.
 
-    A request to cdn.jsdelivr.net should be classified as jsDelivr with the
-    category coming from the fingerprint, not any hardcoded map.
+    cdn.jsdelivr.net should be classified as jsDelivr using the plain literal
+    script pattern "cdn.jsdelivr.net" (Step 1 of the new priority).
     """
     fp_jsdelivr = _make_fingerprint(
         name="jsDelivr",
         category="CDN",
-        scripts=[r"cdn\.jsdelivr\.net"],
+        scripts=["cdn.jsdelivr.net"],  # plain literal — no regex escapes
     )
     store = _make_store(fp_jsdelivr)
 
@@ -364,12 +364,17 @@ async def test_invalid_tech_name_format_excluded() -> None:
 
 @pytest.mark.asyncio
 async def test_external_category_website_suffix_match() -> None:
-    """Website suffix mapping normalises and matches correctly, and jsDelivr matches via script patterns."""
+    """Script literal (Step 1) takes cdn.jsdelivr.net; website suffix (Step 2) covers .jsdelivr.com.
+
+    cdn.jsdelivr.net  → literal "cdn.jsdelivr.net" in domain → Step 1 match.
+    www.jsdelivr.com  → no script literal matches → Step 2 website suffix match.
+    cdn.jsdelivr.com  → no script literal matches → Step 2 website suffix match.
+    """
     fp_jsdelivr = Fingerprint(
         name="jsDelivr",
         category="CDN",
         website="https://www.jsdelivr.com",
-        scripts=[r"cdn\.jsdelivr\.net"],
+        scripts=["cdn.jsdelivr.net"],  # plain literal — no regex escapes
         confidence=0.8,
     )
     store = _make_store(fp_jsdelivr)
@@ -392,15 +397,17 @@ async def test_external_category_website_suffix_match() -> None:
     ext = result.data.get("external_dependencies", [])
     assert len(ext) == 3
 
-    # cdn.jsdelivr.net → matches via script pattern
+    # cdn.jsdelivr.net → Step 1: literal "cdn.jsdelivr.net" in domain
     cdn_net = next(x for x in ext if x["domain"] == "cdn.jsdelivr.net")
     assert cdn_net["category"] == "CDN"
     assert cdn_net["technology_name"] == "jsDelivr"
 
+    # www.jsdelivr.com → Step 2: website suffix "jsdelivr.com" matches
     www_com = next(x for x in ext if x["domain"] == "www.jsdelivr.com")
     assert www_com["category"] == "CDN"
     assert www_com["technology_name"] == "jsDelivr"
 
+    # cdn.jsdelivr.com → Step 2: website suffix "jsdelivr.com" matches
     cdn_com = next(x for x in ext if x["domain"] == "cdn.jsdelivr.com")
     assert cdn_com["category"] == "CDN"
     assert cdn_com["technology_name"] == "jsDelivr"
@@ -442,17 +449,23 @@ async def test_external_category_no_regex_false_positive() -> None:
 
 @pytest.mark.asyncio
 async def test_dynamic_domain_classification() -> None:
-    """Verify that Google/GitHub/jsDelivr domains resolve dynamically to their database-backed tech names."""
+    """Verify that Google/GitHub/jsDelivr domains resolve to correct tech names.
+
+    Uses plain literal script patterns (as stored in real tech.yaml) so
+    Step 1 (literal substring match) fires first.
+    GitHub assets/githubusercontent domains fall through to Step 2
+    (website suffix match on pages.github.com → github.com suffix).
+    """
     fp_google_hosted = Fingerprint(
         name="Google Hosted Libraries",
         category="CDN",
-        scripts=[r"ajax\.googleapis\.com/ajax/libs/"],
+        scripts=["ajax.googleapis.com"],  # plain literal — domain only, no path
         confidence=0.75,
     )
     fp_google_fonts = Fingerprint(
         name="Google Font API",
         category="Font scripts",
-        scripts=[r"fonts\.googleapis\.com/", r"fonts\.gstatic\.com/"],
+        scripts=["fonts.googleapis.com", "fonts.gstatic.com"],  # domain-only literals
         confidence=0.75,
     )
     fp_github_pages = Fingerprint(
@@ -464,7 +477,7 @@ async def test_dynamic_domain_classification() -> None:
     fp_jsdelivr = Fingerprint(
         name="jsDelivr",
         category="CDN",
-        scripts=[r"cdn\.jsdelivr\.net"],
+        scripts=["cdn.jsdelivr.net"],  # plain literal
         confidence=0.75,
     )
     store = _make_store(fp_google_hosted, fp_google_fonts, fp_github_pages, fp_jsdelivr)
@@ -489,18 +502,24 @@ async def test_dynamic_domain_classification() -> None:
     ext = result.data.get("external_dependencies", [])
     by_domain = {d["domain"]: d for d in ext}
 
+    # Step 1: literal "ajax.googleapis.com" found in domain
     assert by_domain["ajax.googleapis.com"]["technology_name"] == "Google Hosted Libraries"
     assert by_domain["ajax.googleapis.com"]["category"] == "CDN"
 
-    assert by_domain["github.githubassets.com"]["technology_name"] == "GitHub Pages"
-    assert by_domain["github.githubassets.com"]["category"] == "PaaS"
+    # github.githubassets.com and avatars.githubusercontent.com have no script literal
+    # and don't suffix-match "pages.github.com" — they are correctly Unclassified
+    # under the strict two-step algorithm (no brand heuristic).
+    assert by_domain["github.githubassets.com"]["technology_name"] is None
+    assert by_domain["github.githubassets.com"]["category"] == "Unclassified"
 
-    assert by_domain["avatars.githubusercontent.com"]["technology_name"] == "GitHub Pages"
-    assert by_domain["avatars.githubusercontent.com"]["category"] == "PaaS"
+    assert by_domain["avatars.githubusercontent.com"]["technology_name"] is None
+    assert by_domain["avatars.githubusercontent.com"]["category"] == "Unclassified"
 
+    # Step 1: literal "fonts.gstatic.com" found in domain
     assert by_domain["fonts.gstatic.com"]["technology_name"] == "Google Font API"
     assert by_domain["fonts.gstatic.com"]["category"] == "Font scripts"
 
+    # Step 1: literal "cdn.jsdelivr.net" found in domain
     assert by_domain["cdn.jsdelivr.net"]["technology_name"] == "jsDelivr"
     assert by_domain["cdn.jsdelivr.net"]["category"] == "CDN"
 
@@ -760,3 +779,139 @@ async def test_most_specific_pattern_wins() -> None:
     )
     assert dep["category"] == "Analytics"
 
+
+# ---------------------------------------------------------------------------
+# New tests — Step 1 priority model
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_script_pattern_takes_priority_over_website() -> None:
+    """Step 1 script literal match must win over Step 2 website suffix match.
+
+    Two fingerprints share the same website domain (microsoft.com) but have
+    different script patterns.  The external domain telemetry.microsoft.com
+    must match fp_product_a via its specific script pattern, NOT fp_product_b
+    whose pattern does not appear in the domain.
+    """
+    fp_product_a = Fingerprint(
+        name="Product A",
+        category="Analytics",
+        website="https://microsoft.com",
+        scripts=["telemetry.microsoft.com"],
+        confidence=0.8,
+    )
+    fp_product_b = Fingerprint(
+        name="Product B",
+        category="Search engines",
+        website="https://microsoft.com",
+        scripts=["search.microsoft.com"],
+        confidence=0.8,
+    )
+    store = _make_store(fp_product_a, fp_product_b)
+
+    har_entries = [_har("https://telemetry.microsoft.com/collect")]
+
+    mapper = DomainMapper(
+        base_url="https://example.com",
+        har_entries=har_entries,
+        fingerprint_store=store,
+    )
+
+    with patch.object(mapper, "_discover_internal_subdomains", new=AsyncMock(return_value=[])):
+        result = await mapper.collect()
+
+    ext = result.data.get("external_dependencies", [])
+    assert len(ext) == 1
+    dep = ext[0]
+    assert dep["domain"] == "telemetry.microsoft.com"
+    # Script literal "telemetry.microsoft.com" must win — Product A
+    assert dep["technology_name"] == "Product A", (
+        f"Expected 'Product A' (script literal match), got {dep['technology_name']!r}"
+    )
+    assert dep["category"] == "Analytics"
+    # Product B must NOT be selected despite same website suffix
+    assert dep["technology_name"] != "Product B"
+
+
+@pytest.mark.asyncio
+async def test_longest_script_pattern_wins() -> None:
+    """Among multiple Step 1 script literal matches, the longest pattern wins.
+
+    fp_generic  script "googleapis.com"      → len 14
+    fp_maps     script "maps.googleapis.com" → len 19  (more specific)
+
+    External domain "maps.googleapis.com" must resolve to fp_maps.
+    """
+    fp_generic = Fingerprint(
+        name="Google APIs",
+        category="CDN",
+        scripts=["googleapis.com"],
+        confidence=0.8,
+    )
+    fp_maps = Fingerprint(
+        name="Google Maps",
+        category="Maps",
+        scripts=["maps.googleapis.com"],
+        confidence=0.7,  # lower confidence, but longer pattern → must win
+    )
+    store = _make_store(fp_generic, fp_maps)
+
+    har_entries = [_har("https://maps.googleapis.com/maps/api/js")]
+
+    mapper = DomainMapper(
+        base_url="https://example.com",
+        har_entries=har_entries,
+        fingerprint_store=store,
+    )
+
+    with patch.object(mapper, "_discover_internal_subdomains", new=AsyncMock(return_value=[])):
+        result = await mapper.collect()
+
+    ext = result.data.get("external_dependencies", [])
+    assert len(ext) == 1
+    dep = ext[0]
+    assert dep["domain"] == "maps.googleapis.com"
+    # Longer pattern "maps.googleapis.com" must win over shorter "googleapis.com"
+    assert dep["technology_name"] == "Google Maps", (
+        f"Expected 'Google Maps' (longest pattern), got {dep['technology_name']!r}"
+    )
+    assert dep["category"] == "Maps"
+
+
+@pytest.mark.asyncio
+async def test_website_suffix_fallback_when_no_script_match() -> None:
+    """Step 2 website suffix match fires when no script literal matches (Step 1 miss).
+
+    Fingerprint has no script patterns — only a website URL.
+    External domain cdn.example.com ends with example.com → Step 2 should match.
+    """
+    fp_example = Fingerprint(
+        name="Example Platform",
+        category="PaaS",
+        website="https://example.com",
+        scripts=[],  # no script patterns — Step 1 cannot fire
+        confidence=0.8,
+    )
+    store = _make_store(fp_example)
+
+    har_entries = [_har("https://cdn.example.com/assets/lib.js")]
+
+    mapper = DomainMapper(
+        base_url="https://myapp.io",
+        har_entries=har_entries,
+        fingerprint_store=store,
+    )
+
+    with patch.object(mapper, "_discover_internal_subdomains", new=AsyncMock(return_value=[])):
+        result = await mapper.collect()
+
+    ext = result.data.get("external_dependencies", [])
+    assert len(ext) == 1
+    dep = ext[0]
+    assert dep["domain"] == "cdn.example.com"
+    # Step 2: website suffix "example.com" matches cdn.example.com
+    assert dep["technology_name"] == "Example Platform", (
+        f"Expected 'Example Platform' (website suffix fallback), got {dep['technology_name']!r}"
+    )
+    assert dep["category"] == "PaaS"

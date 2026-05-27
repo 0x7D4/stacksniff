@@ -334,46 +334,106 @@ class DomainMapper:
 
         return False
 
+    @staticmethod
+    def _is_safe_literal_pattern(pattern: str) -> bool:
+        """Return True if *pattern* contains no regex special characters.
+
+        Safe literals can be used as plain ``in`` substring checks without
+        risk of false positives from regex metacharacters accidentally
+        matching unrelated text (e.g. ``google\\.com`` is not safe because
+        the backslash is a special char, but ``googletagmanager.com/gtm.js``
+        is safe).
+        """
+        _REGEX_SPECIALS = set(r"^$[]{}()|*+?\\")
+        return not any(ch in _REGEX_SPECIALS for ch in pattern)
+
     def _classify_domain(
         self,
         domain: str,
         fingerprints: list[Fingerprint],
     ) -> tuple[str | None, str | None]:
-        """Reverse-lookup *domain* against fingerprints using website domain-suffix
-        and dynamic script pattern matching.
+        """Reverse-lookup *domain* against fingerprints.
+
+        Priority order
+        --------------
+        1. **Script pattern literal match** (primary):
+           For each fingerprint, check every script pattern that is a safe
+           literal (no regex special characters).  If that literal appears
+           as a substring of *domain*, it is a candidate.  Among all
+           candidates pick the one with the *longest* matching pattern
+           (most specific); ties broken by fingerprint confidence.
+
+           Example::
+
+               fp "Google Maps" script "maps.googleapis.com"
+               domain = "maps.googleapis.com"
+               "maps.googleapis.com" in "maps.googleapis.com" -> True
+
+               fp "FullStory" script "fullstory.com"
+               domain = "rs.fullstory.com"
+               "fullstory.com" in "rs.fullstory.com" -> True
+
+        2. **Website suffix match** (fallback):
+           Only reached when Step 1 produces no result.
+           Strip scheme and ``www.`` from each fingerprint's ``website``
+           field and check whether *domain* ends with that string.
+           Among matches pick the longest suffix first, then highest
+           confidence fingerprint.
+
+        3. **Unclassified**:
+           ``(None, None)`` — caller maps this to ``"Unclassified"``.
         """
         domain_lower = domain.lower()
 
-        # Build website lookup dict at runtime by extracting the website field
-        # from each fingerprint, stripping the scheme and "www." prefix.
-        # Fix 2: store ALL fingerprints per site_domain so we can pick the
-        # most specific suffix match rather than just the highest-confidence one.
+        # ------------------------------------------------------------------
+        # Step 1 — Script pattern literal match (primary)
+        # ------------------------------------------------------------------
+        # (pattern_length, confidence, name, category)
+        script_candidates: list[tuple[int, float, str, str]] = []
+
+        for fp in fingerprints:
+            for pattern in fp.scripts:
+                if not pattern:
+                    continue
+                pat_lower = pattern.lower()
+                if self._is_safe_literal_pattern(pat_lower) and pat_lower in domain_lower:
+                    script_candidates.append(
+                        (len(pat_lower), fp.confidence, fp.name, fp.category)
+                    )
+
+        if script_candidates:
+            # Longest pattern first (most specific); ties broken by confidence
+            script_candidates.sort(key=lambda t: (-t[0], -t[1]))
+            _, _, best_name, best_category = script_candidates[0]
+            return best_name, best_category
+
+        # ------------------------------------------------------------------
+        # Step 2 — Website suffix match (fallback)
+        # ------------------------------------------------------------------
         website_lookup: dict[str, list[dict]] = {}
         for fp in fingerprints:
-            if fp.website:
-                try:
-                    parsed = urlparse(fp.website)
+            if not fp.website:
+                continue
+            try:
+                parsed = urlparse(fp.website)
+                netloc = parsed.netloc.lower()
+                if not netloc and "//" not in fp.website:
+                    parsed = urlparse("//" + fp.website)
                     netloc = parsed.netloc.lower()
-                    if not netloc and "//" not in fp.website:
-                        parsed = urlparse("//" + fp.website)
-                        netloc = parsed.netloc.lower()
+                if netloc:
+                    host = netloc.split(":")[0]
+                    site_domain = host.removeprefix("www.")
+                    if site_domain:
+                        website_lookup.setdefault(site_domain, []).append({
+                            "name": fp.name,
+                            "category": fp.category,
+                            "confidence": fp.confidence,
+                        })
+            except Exception:
+                continue
 
-                    if netloc:
-                        host = netloc.split(":")[0]
-                        site_domain = host.removeprefix("www.")
-                        if site_domain:
-                            website_lookup.setdefault(site_domain, []).append({
-                                "name": fp.name,
-                                "category": fp.category,
-                                "confidence": fp.confidence,
-                            })
-                except Exception:
-                    continue
-
-        # 3. Perform website suffix matching
-        # Fix 2: collect all candidate matches and pick by (specificity desc, confidence desc)
-        # so a fingerprint whose website IS the domain beats one that only suffix-matches.
-        website_candidates: list[tuple[int, float, str, str]] = []  # (match_len, conf, name, cat)
+        # (match_len, confidence, name, category)
+        website_candidates: list[tuple[int, float, str, str]] = []
 
         for site_domain, fp_infos in website_lookup.items():
             if domain_lower == site_domain or domain_lower.endswith("." + site_domain):
@@ -384,55 +444,14 @@ class DomainMapper:
                     )
 
         if website_candidates:
-            # Sort: longest match first, then highest confidence
+            # Longest suffix first, then highest confidence
             website_candidates.sort(key=lambda t: (-t[0], -t[1]))
             _, _, best_name, best_category = website_candidates[0]
             return best_name, best_category
 
-        # 4. Perform script pattern domain prefix matching
-        script_matches = []
-        for fp in fingerprints:
-            for pattern in fp.scripts:
-                script_domain = self._extract_domain_from_pattern(pattern)
-                if script_domain:
-                    if domain_lower == script_domain or domain_lower.endswith("." + script_domain):
-                        script_matches.append({
-                            "script_domain": script_domain,
-                            "fp": fp
-                        })
-
-        if script_matches:
-            # Filter matches where the technology brand matches the domain name.
-            brand_filtered_matches = [
-                m for m in script_matches
-                if self._brand_matches(m["fp"].name, domain_lower)
-            ]
-
-            if brand_filtered_matches:
-                # Sort matches by matching script domain prefix length descending (specificity)
-                # and fingerprint confidence descending.
-                brand_filtered_matches.sort(key=lambda m: (-len(m["script_domain"]), -m["fp"].confidence))
-                best_match = brand_filtered_matches[0]
-                return best_match["fp"].name, best_match["fp"].category
-            else:
-                # Fall back to a unique match if no brand match is found.
-                unique_techs = {m["fp"].name: m["fp"] for m in script_matches}
-                if len(unique_techs) == 1:
-                    fp = list(unique_techs.values())[0]
-                    return fp.name, fp.category
-
-        # 5. Fall back to heuristic brand matching against all fingerprints if script matches are ambiguous or absent.
-        all_brand_matches = []
-        for fp in fingerprints:
-            if self._brand_matches(fp.name, domain_lower):
-                all_brand_matches.append(fp)
-
-        if all_brand_matches:
-            # Sort by confidence descending.
-            all_brand_matches.sort(key=lambda fp: -fp.confidence)
-            best_fp = all_brand_matches[0]
-            return best_fp.name, best_fp.category
-
+        # ------------------------------------------------------------------
+        # Step 3 — Unclassified
+        # ------------------------------------------------------------------
         return None, None
 
     # ------------------------------------------------------------------
