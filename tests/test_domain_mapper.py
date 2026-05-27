@@ -915,3 +915,113 @@ async def test_website_suffix_fallback_when_no_script_match() -> None:
         f"Expected 'Example Platform' (website suffix fallback), got {dep['technology_name']!r}"
     )
     assert dep["category"] == "PaaS"
+
+
+@pytest.mark.asyncio
+async def test_hackertarget_fallback_when_crtsh_fails() -> None:
+    """If crt.sh fails, fallback to HackerTarget and verify subdomain parsing + source field."""
+    mapper = DomainMapper(
+        base_url="https://example.com",
+        har_entries=[],
+        fingerprint_store=_make_store(),
+    )
+
+    async def mock_get(url, *args, **kwargs):
+        if "crt.sh" in url:
+            raise httpx.TimeoutException("crt.sh timed out")
+        elif "hackertarget.com" in url:
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_resp.text = "api.example.com,1.2.3.4\ndev.example.com,5.6.7.8\n"
+            return mock_resp
+        raise ValueError(f"Unexpected get URL: {url}")
+
+    async def mock_head(url, *args, **kwargs):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {"Content-Type": "text/html"}
+        return mock_resp
+
+    with patch("httpx.AsyncClient.get", side_effect=mock_get), \
+         patch("httpx.AsyncClient.head", side_effect=mock_head):
+        subs = await mapper._discover_internal_subdomains()
+
+    assert len(subs) == 2
+    assert subs[0]["subdomain"] == "api.example.com"
+    assert subs[0]["ct_source"] == "hackertarget"
+    assert subs[1]["subdomain"] == "dev.example.com"
+    assert subs[1]["ct_source"] == "hackertarget"
+
+
+@pytest.mark.asyncio
+async def test_certspotter_fallback_when_both_fail() -> None:
+    """If crt.sh and HackerTarget fail, fallback to CertSpotter."""
+    mapper = DomainMapper(
+        base_url="https://example.com",
+        har_entries=[],
+        fingerprint_store=_make_store(),
+    )
+
+    async def mock_get(url, *args, **kwargs):
+        if "crt.sh" in url:
+            raise httpx.TimeoutException("crt.sh timed out")
+        elif "hackertarget.com" in url:
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_resp.text = "API count exceeded"
+            return mock_resp
+        elif "certspotter.com" in url:
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_resp.json = lambda: [
+                {"dns_names": ["api.example.com", "v2.example.com"]},
+                {"dns_names": ["dev.example.com"]}
+            ]
+            return mock_resp
+        raise ValueError(f"Unexpected get URL: {url}")
+
+    async def mock_head(url, *args, **kwargs):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {"Content-Type": "text/html"}
+        return mock_resp
+
+    with patch("httpx.AsyncClient.get", side_effect=mock_get), \
+         patch("httpx.AsyncClient.head", side_effect=mock_head):
+        subs = await mapper._discover_internal_subdomains()
+
+    assert len(subs) == 3
+    assert subs[0]["subdomain"] == "api.example.com"
+    assert subs[0]["ct_source"] == "certspotter"
+    assert subs[1]["subdomain"] == "dev.example.com"
+    assert subs[1]["ct_source"] == "certspotter"
+    assert subs[2]["subdomain"] == "v2.example.com"
+    assert subs[2]["ct_source"] == "certspotter"
+
+
+@pytest.mark.asyncio
+async def test_all_sources_fail_returns_empty() -> None:
+    """If all sources fail/return empty, logs a warning and returns empty list."""
+    mapper = DomainMapper(
+        base_url="https://example.com",
+        har_entries=[],
+        fingerprint_store=_make_store(),
+    )
+
+    async def mock_get(url, *args, **kwargs):
+        raise httpx.TimeoutException("timeout connection error")
+
+    with patch("httpx.AsyncClient.get", side_effect=mock_get), \
+         patch("logging.Logger.warning") as mock_warning:
+        subs = await mapper._discover_internal_subdomains()
+
+    assert len(subs) == 0
+    assert len(mapper.errors) == 1
+    assert "crt.sh unavailable, subdomain discovery skipped" in mapper.errors[0]
+    mock_warning.assert_called_once()
+    warning_arg = mock_warning.call_args[0][0]
+    assert "All subdomain sources failed:" in warning_arg
+    assert "crt.sh" in warning_arg
+    assert "HackerTarget" in warning_arg
+    assert "CertSpotter" in warning_arg
+

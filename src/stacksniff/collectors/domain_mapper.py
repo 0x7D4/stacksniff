@@ -459,18 +459,20 @@ class DomainMapper:
     # ------------------------------------------------------------------
 
     async def _discover_internal_subdomains(self) -> list[dict]:
-        """Query crt.sh for CT log subdomains, then probe each one live."""
+        """Query subdomain sources in fallback chain, then probe each one live."""
         if not self._target_domain:
             return []
 
         subdomains = await self._fetch_crtsh_subdomains()
         if not subdomains:
-            logger.debug("DomainMapper: crt.sh returned no subdomains for %s", self._target_domain)
+            logger.debug("DomainMapper: no subdomains discovered for %s", self._target_domain)
             return []
 
+        source_name = getattr(self, "_ct_source", "crt.sh")
         logger.debug(
-            "DomainMapper: probing %d subdomains for %s",
+            "DomainMapper: probing %d subdomains from %s for %s",
             len(subdomains),
+            source_name,
             self._target_domain,
         )
 
@@ -491,7 +493,7 @@ class DomainMapper:
             },
         ) as client:
             tasks = [
-                self._probe_subdomain(client, sub, semaphore, all_fingerprints)
+                self._probe_subdomain(client, sub, semaphore, all_fingerprints, source_name)
                 for sub in subdomains
             ]
             probe_results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -509,6 +511,51 @@ class DomainMapper:
         return internal_subs
 
     async def _fetch_crtsh_subdomains(self) -> list[str]:
+        """Try each source in order, stop when one returns results.
+
+        Sets self._ct_source to the name of the source that succeeded.
+        If all sources fail, log warning with all three source errors and return empty list.
+        """
+        self._ct_source = "crt.sh"
+        errors = []
+
+        # Source 1: crt.sh
+        try:
+            subdomains = await self._fetch_crtsh_subdomains_inner()
+            if subdomains:
+                self._ct_source = "crt.sh"
+                return subdomains
+            errors.append("crt.sh returned 0 subdomains")
+        except Exception as e:
+            errors.append(f"crt.sh error: {e}")
+
+        # Source 2: HackerTarget
+        try:
+            subdomains = await self._fetch_hackertarget_subdomains()
+            if subdomains:
+                self._ct_source = "hackertarget"
+                return subdomains
+            errors.append("HackerTarget returned 0 subdomains")
+        except Exception as e:
+            errors.append(f"HackerTarget error: {e}")
+
+        # Source 3: CertSpotter
+        try:
+            subdomains = await self._fetch_certspotter_subdomains()
+            if subdomains:
+                self._ct_source = "certspotter"
+                return subdomains
+            errors.append("CertSpotter returned 0 subdomains")
+        except Exception as e:
+            errors.append(f"CertSpotter error: {e}")
+
+        # If we got here, all three failed or returned empty.
+        warning_msg = f"All subdomain sources failed: {'; '.join(errors)}"
+        logger.warning(warning_msg)
+        self.errors.append("crt.sh unavailable, subdomain discovery skipped")
+        return []
+
+    async def _fetch_crtsh_subdomains_inner(self) -> list[str]:
         """Query crt.sh and return de-duped, filtered subdomains."""
         url = f"https://crt.sh/?q=%.{self._target_domain}&output=json"
         headers = {
@@ -516,6 +563,7 @@ class DomainMapper:
         }
         entries = None
         backoff_delays = [0.0, 2.0, 4.0]
+        last_exc = None
 
         for attempt, delay in enumerate(backoff_delays, start=1):
             if delay > 0:
@@ -527,17 +575,20 @@ class DomainMapper:
                 ) as client:
                     resp = await client.get(url, headers=headers)
                     if resp.status_code != 200:
-                        logger.debug("crt.sh returned HTTP %d", resp.status_code)
-                        resp.raise_for_status()
+                        raise httpx.HTTPStatusError(
+                            f"HTTP {resp.status_code}",
+                            request=resp.request,
+                            response=resp
+                        )
                     entries = resp.json()
                     break
-            except (httpx.HTTPError, ValueError, Exception) as exc:
+            except Exception as exc:
                 logger.debug("crt.sh query failed on attempt %d: %s", attempt, exc)
-                if attempt == 3:
-                    msg = "crt.sh unavailable, subdomain discovery skipped"
-                    logger.warning(msg)
-                    self.errors.append(msg)
-                    return []
+                last_exc = exc
+        else:
+            if last_exc:
+                raise last_exc
+            raise RuntimeError("crt.sh retries exhausted without response")
 
         if entries is None:
             return []
@@ -548,7 +599,6 @@ class DomainMapper:
 
         for entry in entries:
             name_value = entry.get("name_value", "")
-            # Each name_value may contain multiple names separated by \n
             for name in name_value.split("\n"):
                 name = name.strip().lower()
                 if not name:
@@ -564,12 +614,129 @@ class DomainMapper:
 
         return result
 
+    async def _fetch_hackertarget_subdomains(self) -> list[str]:
+        """Query HackerTarget and return de-duped, filtered subdomains."""
+        url = f"https://api.hackertarget.com/hostsearch/?q={self._target_domain}"
+        headers = {
+            "User-Agent": "stacksniff/0.1.0 (Certificate Transparency lookup)"
+        }
+        text = ""
+        last_exc = None
+
+        # 1 retry = 2 attempts total
+        for attempt in range(1, 3):
+            try:
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(10.0),
+                    follow_redirects=True,
+                ) as client:
+                    resp = await client.get(url, headers=headers)
+                    if resp.status_code != 200:
+                        raise httpx.HTTPStatusError(
+                            f"HTTP {resp.status_code}",
+                            request=resp.request,
+                            response=resp
+                        )
+                    text = resp.text
+                    break
+            except Exception as exc:
+                logger.debug("HackerTarget query failed on attempt %d: %s", attempt, exc)
+                last_exc = exc
+        else:
+            if last_exc:
+                raise last_exc
+            raise RuntimeError("HackerTarget retries exhausted without response")
+
+        if "API count exceeded" in text or "error check your search parameter" in text:
+            raise RuntimeError(f"HackerTarget returned error: {text.strip()}")
+
+        suffix = f".{self._target_domain}"
+        seen: set[str] = set()
+        result: list[str] = []
+
+        for line in text.strip().split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(",")
+            if not parts:
+                continue
+            sub = parts[0].strip().lower()
+            if not sub or sub.startswith("*."):
+                continue
+            if not sub.endswith(suffix) and sub != self._target_domain:
+                continue
+            if sub in seen:
+                continue
+            seen.add(sub)
+            result.append(sub)
+
+        return result
+
+    async def _fetch_certspotter_subdomains(self) -> list[str]:
+        """Query CertSpotter and return de-duped, filtered subdomains."""
+        url = f"https://api.certspotter.com/v1/issuances?domain={self._target_domain}&include_subdomains=true&expand=dns_names"
+        headers = {
+            "User-Agent": "stacksniff/0.1.0 (Certificate Transparency lookup)"
+        }
+        data = None
+        last_exc = None
+
+        # 1 retry = 2 attempts total
+        for attempt in range(1, 3):
+            try:
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(10.0),
+                    follow_redirects=True,
+                ) as client:
+                    resp = await client.get(url, headers=headers)
+                    if resp.status_code != 200:
+                        raise httpx.HTTPStatusError(
+                            f"HTTP {resp.status_code}",
+                            request=resp.request,
+                            response=resp
+                        )
+                    data = resp.json()
+                    break
+            except Exception as exc:
+                logger.debug("CertSpotter query failed on attempt %d: %s", attempt, exc)
+                last_exc = exc
+        else:
+            if last_exc:
+                raise last_exc
+            raise RuntimeError("CertSpotter retries exhausted without response")
+
+        if not isinstance(data, list):
+            raise ValueError("CertSpotter response is not a JSON array")
+
+        suffix = f".{self._target_domain}"
+        seen: set[str] = set()
+        result: list[str] = []
+
+        for item in data:
+            dns_names = item.get("dns_names")
+            if not dns_names or not isinstance(dns_names, list):
+                continue
+            for name in dns_names:
+                name = name.strip().lower()
+                if not name or name.startswith("*."):
+                    continue
+                if not name.endswith(suffix) and name != self._target_domain:
+                    continue
+                if name in seen:
+                    continue
+                seen.add(name)
+                result.append(name)
+
+        return result
+
     async def _probe_subdomain(
         self,
         client: httpx.AsyncClient,
         subdomain: str,
         semaphore: asyncio.Semaphore,
         fingerprints: list[Fingerprint],
+        ct_source: str,
     ) -> dict | None:
         """HEAD-probe a single subdomain and classify its tech stack.
 
@@ -652,6 +819,7 @@ class DomainMapper:
             "response_time_ms": round(response_time_ms, 1),
             "detected_tech": detected_tech,
             "detected_category": detected_category,
+            "ct_source": ct_source,
         }
 
     def _classify_by_header_text(

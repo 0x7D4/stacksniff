@@ -337,6 +337,9 @@ def scan(
             tech = sub.get("detected_tech") or ""
             rtime = f"{sub.get('response_time_ms', 0):.0f}ms"
             subdomain_str = sub.get("subdomain", "")
+            ct_source = sub.get("ct_source")
+            if ct_source:
+                subdomain_str += f" [dim]({ct_source})[/dim]"
 
             # Inline redirect for 301/302
             redirect = sub.get("redirect_location")

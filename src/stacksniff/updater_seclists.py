@@ -28,75 +28,20 @@ import yaml
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# SecLists base URL
+# Helpers
 # ---------------------------------------------------------------------------
 
-_BASE_URL = (
-    "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/"
-)
 
-# ---------------------------------------------------------------------------
-# Wordlist manifest: remote_key → (disk_filename, tech_match list, always_probe flag)
-# Each tuple element:
-#   disk_filename – filename to save as under output_dir (no path separators)
-#   tech_match    – list of lowercase tech keywords; empty list means always probe
-#   always_probe  – True means include paths regardless of detected tech
-# ---------------------------------------------------------------------------
-
-_WORDLIST_CONFIG: dict[str, tuple[str, list[str], bool]] = {
-    # Framework-specific (in CMS/ and Programming-Language-Specific/ subdirs)
-    "Programming-Language-Specific/Java-Spring-Boot.txt": (
-        "spring-boot.txt",
-        ["spring boot", "spring", "java"],
-        False,
-    ),
-    "CMS/Django.txt": (
-        "django.txt",
-        ["django", "python"],
-        False,
-    ),
-    "Programming-Language-Specific/ror.txt": (
-        "rails.txt",
-        ["ruby on rails", "rails", "ruby"],
-        False,
-    ),
-    "CMS/wordpress.fuzz.txt": (
-        "wordpress.txt",
-        ["wordpress", "woocommerce"],
-        False,
-    ),
-    "Programming-Language-Specific/PHP.fuzz.txt": (
-        "laravel.txt",
-        ["laravel", "php"],
-        False,
-    ),
-    "CMS/Drupal.txt": (
-        "drupal.txt",
-        ["drupal"],
-        False,
-    ),
-    "CMS/joomla-plugins.fuzz.txt": (
-        "joomla.txt",
-        ["joomla"],
-        False,
-    ),
-    # General API discovery — always probed regardless of detected tech
-    "api/api-endpoints.txt": (
-        "api-endpoints.txt",
-        [],
-        True,
-    ),
-    "Service-Specific/Swagger.txt": (
-        "swagger.txt",
-        [],
-        True,
-    ),
-    "graphql.txt": (
-        "graphql.txt",
-        [],
-        True,
-    ),
-}
+def normalize_filename(filename: str) -> str:
+    """Normalize filename: strip .txt, lowercase, replace hyphens/underscores with space, special case: js -> .js."""
+    stem = filename.lower()
+    if stem.endswith(".txt"):
+        stem = stem[:-4]
+    normalized = stem.replace("-", " ").replace("_", " ")
+    # Special case: js -> .js
+    # Replace " js" with ".js"
+    normalized = normalized.replace(" js", ".js")
+    return normalized
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +62,6 @@ class SeclistsUpdateResult:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
-
 
 
 def _parse_wordlist(raw_text: str) -> list[str]:
@@ -159,10 +103,10 @@ async def fetch_seclists(
 ) -> SeclistsUpdateResult:
     """Fetch SecLists wordlists concurrently and persist them to *output_dir*.
 
-    All 11 wordlists are fetched in a single :class:`httpx.AsyncClient` session
-    using :func:`asyncio.gather` for maximum concurrency.  Each file is parsed,
-    deduplicated, and written to ``output_dir/<filename>.txt``.  A
-    ``manifest.yaml`` is written alongside the wordlist files.
+    Retrieves the directory listings for danielmiessler/SecLists Web-Content
+    and its api/ subdirectory from GitHub API. Files are normalized and mapped
+    to FingerprintStore technologies. Relevant files are fetched concurrently
+    using their download_urls.
 
     Parameters
     ----------
@@ -179,55 +123,152 @@ async def fetch_seclists(
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    async def _fetch_one(
+    # Load FingerprintStore from newly-updated tech.yaml if present, or fallback
+    tech_yaml_path = output_dir.parent / "tech.yaml"
+    from stacksniff.fingerprints import FingerprintStore
+    if tech_yaml_path.is_file():
+        store = FingerprintStore.from_yaml(tech_yaml_path)
+    else:
+        store = FingerprintStore.default()
+
+    headers = {
+        "User-Agent": "stacksniff/0.1.0 (SecLists dynamic updater)"
+    }
+
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        # Fetch root listing
+        try:
+            resp1 = await client.get(
+                "https://api.github.com/repos/danielmiessler/SecLists/contents/Discovery/Web-Content",
+                headers=headers,
+            )
+            resp1.raise_for_status()
+            items1 = resp1.json()
+        except Exception as e:
+            logger.error("Failed to fetch SecLists directory listing: %s", e)
+            items1 = []
+
+        # Fetch api/ subdirectory listing
+        try:
+            resp2 = await client.get(
+                "https://api.github.com/repos/danielmiessler/SecLists/contents/Discovery/Web-Content/api",
+                headers=headers,
+            )
+            resp2.raise_for_status()
+            items2 = resp2.json()
+        except Exception as e:
+            logger.error("Failed to fetch SecLists api subdirectory listing: %s", e)
+            items2 = []
+
+    all_items = []
+    if isinstance(items1, list):
+        all_items.extend(items1)
+    if isinstance(items2, list):
+        all_items.extend(items2)
+
+    unique_files = {}
+    for item in all_items:
+        if isinstance(item, dict) and item.get("type") == "file":
+            name = item.get("name", "")
+            if name.endswith(".txt") and item.get("download_url"):
+                unique_files[name] = item
+
+    always_probe_names = {
+        "api-endpoints.txt",
+        "swagger.txt",
+        "graphql.txt",
+        "api-seen-in-the-wild.txt",
+        "api-seen-in-wild.txt",
+        "objects.txt",
+        "actions.txt",
+    }
+
+    files_to_download = []
+    for filename, item in unique_files.items():
+        normalized = normalize_filename(filename)
+
+        # Check matches in FingerprintStore (case-insensitive substring match)
+        tech_match = []
+        for tech_key in store.technologies.keys():
+            if normalized in tech_key:
+                tech_match.append(tech_key)
+
+        tech_match.sort()
+
+        if tech_match:
+            always_probe = False
+        else:
+            always_probe = filename in always_probe_names
+
+        if tech_match or always_probe:
+            files_to_download.append({
+                "name": filename,
+                "download_url": item["download_url"],
+                "tech_match": tech_match,
+                "always_probe": always_probe,
+            })
+
+    async def _fetch_one_file(
         client: httpx.AsyncClient,
-        remote_key: str,
+        file_info: dict,
     ) -> tuple[str, list[str]]:
-        """Fetch a single wordlist file and return ``(remote_key, paths)``."""
-        url = _BASE_URL + remote_key
+        url = file_info["download_url"]
+        name = file_info["name"]
         try:
             response = await client.get(url)
             response.raise_for_status()
             paths = _parse_wordlist(response.text)
-            logger.debug("Fetched %s → %d paths", remote_key, len(paths))
-            return remote_key, paths
-        except httpx.HTTPStatusError as exc:
-            logger.warning(
-                "HTTP %s fetching SecLists wordlist %s: %s",
-                exc.response.status_code,
-                remote_key,
-                exc,
-            )
-            return remote_key, []
-        except httpx.RequestError as exc:
-            logger.warning("Network error fetching SecLists wordlist %s: %s", remote_key, exc)
-            return remote_key, []
+            logger.debug("Fetched %s → %d paths", name, len(paths))
+            return name, paths
+        except Exception as exc:
+            logger.warning("Error fetching SecLists file %s: %s", name, exc)
+            return name, []
 
-    # Fetch all wordlists concurrently
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-        fetch_tasks = [
-            _fetch_one(client, remote_key) for remote_key in _WORDLIST_CONFIG
-        ]
-        raw_results: list[tuple[str, list[str]]] = await asyncio.gather(*fetch_tasks)
+    if files_to_download:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            download_tasks = [
+                _fetch_one_file(client, f) for f in files_to_download
+            ]
+            download_results = await asyncio.gather(*download_tasks)
+    else:
+        download_results = []
 
     # Build result map and persist to disk
     manifest_entries: dict[str, Any] = {}
     total_paths = 0
     files_fetched = 0
 
-    for remote_key, paths in raw_results:
-        disk_name, tech_match, always_probe = _WORDLIST_CONFIG[remote_key]
+    download_results_map = dict(download_results)
 
-        # Save wordlist file
-        out_file = output_dir / disk_name
-        out_file.write_text("\n".join(paths), encoding="utf-8")
+    for filename, item in unique_files.items():
+        normalized = normalize_filename(filename)
 
-        path_count = len(paths)
-        total_paths += path_count
-        if path_count > 0:
-            files_fetched += 1
+        # Check matches in FingerprintStore
+        tech_match = []
+        for tech_key in store.technologies.keys():
+            if normalized in tech_key:
+                tech_match.append(tech_key)
 
-        manifest_entries[disk_name] = {
+        tech_match.sort()
+
+        if tech_match:
+            always_probe = False
+        else:
+            always_probe = filename in always_probe_names
+
+        path_count = 0
+        if filename in download_results_map:
+            paths = download_results_map[filename]
+            path_count = len(paths)
+            total_paths += path_count
+            if path_count > 0:
+                files_fetched += 1
+
+            # Save wordlist file
+            out_file = output_dir / filename
+            out_file.write_text("\n".join(paths), encoding="utf-8")
+
+        manifest_entries[filename] = {
             "tech_match": tech_match,
             "path_count": path_count,
             "always_probe": always_probe,
@@ -236,6 +277,7 @@ async def fetch_seclists(
     # Write manifest YAML
     manifest: dict[str, Any] = {
         "version": datetime.now(UTC).isoformat(),
+        "source": "dynamic",
         "files": manifest_entries,
     }
     manifest_path = output_dir / "manifest.yaml"
@@ -257,3 +299,4 @@ async def fetch_seclists(
         output_dir=output_dir,
         manifest_path=manifest_path,
     )
+
