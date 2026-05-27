@@ -61,6 +61,30 @@ from stacksniff.fingerprints import Fingerprint, FingerprintStore
 
 logger = logging.getLogger(__name__)
 
+
+def _apex_domain(host: str) -> str:
+    """Return the apex (registered) domain for *host*.
+
+    Handles common two-part ccTLDs (e.g. co.uk, com.au) by returning the last
+    three labels in that case; otherwise returns the last two labels.
+
+    Examples::
+
+        _apex_domain("v2.aiori.in")          -> "aiori.in"
+        _apex_domain("api.example.co.uk")    -> "example.co.uk"
+        _apex_domain("maps.googleapis.com")  -> "googleapis.com"
+    """
+    host = host.lower().split(":")[0]  # strip port
+    parts = host.split(".")
+    if len(parts) >= 3:
+        second_last = parts[-2]
+        last = parts[-1]
+        # Heuristic: short second-level (≤3 chars) + 2-char ccTLD → 3-part apex
+        if len(second_last) <= 3 and len(last) == 2:
+            return ".".join(parts[-3:])
+    return ".".join(parts[-2:]) if len(parts) >= 2 else host
+
+
 # Maximum concurrent subdomain probes (Pattern 9 from async playbook: Semaphore)
 _PROBE_CONCURRENCY = 30
 _PROBE_TIMEOUT = 5.0      # per-subdomain HEAD request timeout
@@ -105,6 +129,8 @@ class DomainMapper:
         # Bare domain without www prefix / port for crt.sh query
         host = self._target_netloc.split(":")[0]
         self._target_domain: str = host.removeprefix("www.")
+        # Apex domain used for same-origin subdomain check (Fix 1)
+        self._target_apex: str = _apex_domain(self._target_domain)
 
     # ------------------------------------------------------------------
     # Public collector interface
@@ -159,8 +185,12 @@ class DomainMapper:
             except Exception:
                 continue
 
-            # Skip same-origin and entries with no netloc
-            if not netloc or netloc == self._target_netloc:
+            # Skip same-origin (including subdomains) and entries with no netloc
+            # Fix 1: compare apex domains so v2.aiori.in is treated as internal
+            if not netloc:
+                continue
+            host_only = netloc.split(":")[0].removeprefix("www.")
+            if _apex_domain(host_only) == self._target_apex:
                 continue
 
             rtype = entry.get("resource_type", "") or ""
@@ -316,7 +346,9 @@ class DomainMapper:
 
         # Build website lookup dict at runtime by extracting the website field
         # from each fingerprint, stripping the scheme and "www." prefix.
-        website_lookup = {}
+        # Fix 2: store ALL fingerprints per site_domain so we can pick the
+        # most specific suffix match rather than just the highest-confidence one.
+        website_lookup: dict[str, list[dict]] = {}
         for fp in fingerprints:
             if fp.website:
                 try:
@@ -330,30 +362,31 @@ class DomainMapper:
                         host = netloc.split(":")[0]
                         site_domain = host.removeprefix("www.")
                         if site_domain:
-                            # Keep highest confidence if duplicate domains exist
-                            existing = website_lookup.get(site_domain)
-                            if existing is None or fp.confidence > existing["confidence"]:
-                                website_lookup[site_domain] = {
-                                    "name": fp.name,
-                                    "category": fp.category,
-                                    "confidence": fp.confidence,
-                                }
+                            website_lookup.setdefault(site_domain, []).append({
+                                "name": fp.name,
+                                "category": fp.category,
+                                "confidence": fp.confidence,
+                            })
                 except Exception:
                     continue
 
         # 3. Perform website suffix matching
-        best_name = None
-        best_category = None
-        best_confidence = -1.0
+        # Fix 2: collect all candidate matches and pick by (specificity desc, confidence desc)
+        # so a fingerprint whose website IS the domain beats one that only suffix-matches.
+        website_candidates: list[tuple[int, float, str, str]] = []  # (match_len, conf, name, cat)
 
-        for site_domain, info in website_lookup.items():
+        for site_domain, fp_infos in website_lookup.items():
             if domain_lower == site_domain or domain_lower.endswith("." + site_domain):
-                if info["confidence"] > best_confidence:
-                    best_name = info["name"]
-                    best_category = info["category"]
-                    best_confidence = info["confidence"]
+                match_len = len(site_domain)
+                for info in fp_infos:
+                    website_candidates.append(
+                        (match_len, info["confidence"], info["name"], info["category"])
+                    )
 
-        if best_name is not None:
+        if website_candidates:
+            # Sort: longest match first, then highest confidence
+            website_candidates.sort(key=lambda t: (-t[0], -t[1]))
+            _, _, best_name, best_category = website_candidates[0]
             return best_name, best_category
 
         # 4. Perform script pattern domain prefix matching

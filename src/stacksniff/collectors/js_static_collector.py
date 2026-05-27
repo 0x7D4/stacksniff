@@ -21,10 +21,12 @@ logger = logging.getLogger(__name__)
 
 # Regex patterns to search for API endpoints in JS bundles
 _REGEX_PATTERNS = [
-    re.compile(r'["\`](/api[^\s"\'`>]{2,80})["\`]'),
+    re.compile(r'["\`](/api[^\s"\'`\>]{2,80})["\`]'),
+    re.compile(r'["\`](/v\d+/[^\s"\'`\>]{2,80})["\`]'),
     re.compile(r'fetch\(["\`]([^"\'`]{5,100})["\`]'),
     re.compile(r'axios\.[a-z]+\(["\`]([^"\'`]{5,100})'),
     re.compile(r'["\`](https?://[^"\'` ]{5,100}/api[^"\'` ]{2,60})["\`]'),
+    re.compile(r'(?:url|path|endpoint|route)\s*[:=]\s*["\`](/[a-zA-Z][^\s"\'`\>]{2,80})["\`]'),
 ]
 
 # Source map mapping comment regex
@@ -94,9 +96,10 @@ class JsStaticCollector:
                 continue
 
             resolved_urls.append(resolved_url)
+            logger.debug("JsStaticCollector: queued script %s", resolved_url)
 
-        # Limit to max 8 script files
-        resolved_urls = resolved_urls[:8]
+        # Limit to max 15 script files to balance coverage vs. scan time (Fix 3)
+        resolved_urls = resolved_urls[:15]
 
         if not resolved_urls:
             result.data = {"static_endpoints": []}

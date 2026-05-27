@@ -655,3 +655,108 @@ def test_brand_matches() -> None:
     assert mapper._brand_matches("Google Font API", "google.com") is True  # brand word: google
     assert mapper._brand_matches("Google Font API", "fonts.gstatic.com") is False  # brand word: google, labels: fonts, gstatic
     assert mapper._brand_matches("Go Tech", "google.com") is False  # brand word: go (len 2 < 5), labels: google
+
+
+# ---------------------------------------------------------------------------
+# Fix 1 — Subdomains of the target domain excluded from external_dependencies
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_subdomain_treated_as_internal() -> None:
+    """Fix 1: subdomains of the scan target must NOT appear in external_dependencies.
+
+    v2.aiori.in, api.aiori.in, and static.aiori.in all share the same apex
+    domain (aiori.in) as the target — they are internal and must be excluded.
+    An unrelated CDN (cdn.example.net) must still appear as external.
+    """
+    store = _make_store()
+
+    har_entries = [
+        _har("https://v2.aiori.in/app.js"),            # subdomain → internal
+        _har("https://api.aiori.in/api/v1/users"),     # subdomain → internal
+        _har("https://static.aiori.in/img/logo.png"),  # subdomain → internal
+        _har("https://cdn.example.net/lib.js"),        # external → included
+    ]
+
+    mapper = DomainMapper(
+        base_url="https://aiori.in",
+        har_entries=har_entries,
+        fingerprint_store=store,
+    )
+
+    with patch.object(mapper, "_discover_internal_subdomains", new=AsyncMock(return_value=[])):
+        result = await mapper.collect()
+
+    ext = result.data.get("external_dependencies", [])
+    domains = [d["domain"] for d in ext]
+
+    # No subdomain of aiori.in should appear
+    for sub in ("v2.aiori.in", "api.aiori.in", "static.aiori.in"):
+        assert sub not in domains, f"Subdomain leaked into external_dependencies: {sub!r}"
+
+    # The unrelated CDN must still be present
+    assert "cdn.example.net" in domains, f"Expected cdn.example.net in {domains}"
+    assert len(ext) == 1, f"Expected exactly 1 external dep, got: {domains}"
+
+
+# ---------------------------------------------------------------------------
+# Fix 2 — Most-specific website domain wins over broader suffix match
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_most_specific_pattern_wins() -> None:
+    """Fix 2: when two fingerprints share a parent domain, the one whose
+    website domain is the longest match for the incoming HAR domain wins.
+
+    Example:
+      fp_maps   → website "https://maps.google.com"       (maps.google.com, len=14)
+      fp_google → website "https://google.com"            (google.com,      len=10)
+
+    HAR domain "maps.googleapis.com" — neither website matches directly, but
+    "maps.google.com" is a closer brand match than "google.com".
+
+    Simpler, purely suffix-based example that doesn't depend on brand heuristics:
+      fp_specific → website "https://specific.example.com" → matches specific.example.com
+      fp_broad    → website "https://example.com"          → matches *.example.com
+
+    Scanning "specific.example.com" must resolve to fp_specific (len 20 > 11).
+    """
+    fp_specific = Fingerprint(
+        name="Specific Tool",
+        category="Analytics",
+        website="https://specific.example.com",
+        confidence=0.8,
+    )
+    fp_broad = Fingerprint(
+        name="Broad Platform",
+        category="Marketing",
+        website="https://example.com",
+        confidence=0.9,  # higher confidence, but shorter match → must lose
+    )
+    store = _make_store(fp_specific, fp_broad)
+
+    har_entries = [
+        _har("https://specific.example.com/track.js"),
+    ]
+
+    mapper = DomainMapper(
+        base_url="https://mysite.io",
+        har_entries=har_entries,
+        fingerprint_store=store,
+    )
+
+    with patch.object(mapper, "_discover_internal_subdomains", new=AsyncMock(return_value=[])):
+        result = await mapper.collect()
+
+    ext = result.data.get("external_dependencies", [])
+    assert len(ext) == 1
+    dep = ext[0]
+    assert dep["domain"] == "specific.example.com"
+    # The longer (more specific) match must win even though fp_broad has higher confidence
+    assert dep["technology_name"] == "Specific Tool", (
+        f"Expected 'Specific Tool' (most-specific match), got {dep['technology_name']!r}"
+    )
+    assert dep["category"] == "Analytics"
+
