@@ -321,8 +321,34 @@ class FrameworkProber:
 
             logger.debug("probe %s status=%d ct=%s", path, status, ct)
 
+            if status in (301, 302):
+                location = response.headers.get("location", "") or ""
+                if location:
+                    try:
+                        # Resolve same-origin trailing slash normalization redirects
+                        # (e.g. /admin -> /admin/) by following them one hop.
+                        orig_parsed = urlparse(url)
+                        orig_path = orig_parsed.path.rstrip("/").lower()
+                        loc_parsed = urlparse(urljoin(url, location))
+                        loc_path = loc_parsed.path.rstrip("/").lower()
+
+                        # If same host and same path (modulo trailing slash), follow one hop
+                        if (loc_parsed.netloc == orig_parsed.netloc or not loc_parsed.netloc) and loc_path == orig_path:
+                            resolved_url = urljoin(url, location)
+                            next_resp = await client.get(resolved_url, follow_redirects=False)
+                            status = next_resp.status_code
+                            response = next_resp
+                            ct = response.headers.get("content-type", "") or ""
+                            ct_lower = ct.lower().strip()
+                            logger.debug("probe trailing-slash resolved %s status=%d ct=%s", resolved_url, status, ct)
+
+                            if status not in _STATUS_MAP:
+                                return None
+                    except Exception as e:
+                        logger.debug("Failed to resolve trailing slash redirect: %s", e)
+
             if status == 200:
-                if source_wordlist in ("actions.txt", "objects.txt"):
+                if source_wordlist.endswith(("actions.txt", "objects.txt")):
                     accepted_types = ("application/json", "application/yaml", "application/xml", "text/plain")
                     if not any(ct_lower.startswith(t) for t in accepted_types):
                         return None

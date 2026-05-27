@@ -791,3 +791,103 @@ async def test_framework_specific_html_200_json_body_kept(tmp_path: Path) -> Non
     assert len(endpoints) == 1
     assert endpoints[0]["status_code"] == 200
     assert endpoints[0]["top_level_keys"] == ["valid"]
+
+
+@pytest.mark.asyncio
+async def test_trailing_slash_redirect_resolved(tmp_path: Path) -> None:
+    """Verify that a 301 redirect to the same path with a trailing slash is resolved,
+    and if it then redirects to a login page, it is discarded.
+    """
+    seclists_dir = tmp_path / "seclists"
+    seclists_dir.mkdir()
+
+    files_meta = {
+        "actions.txt": {
+            "tech_match": [],
+            "path_count": 1,
+            "always_probe": True,
+        }
+    }
+    _write_manifest(seclists_dir, files_meta)
+    _write_wordlist(seclists_dir, "actions.txt", ["/admin"])
+
+    calls = []
+
+    async def mock_get(url: str, **kwargs: Any) -> httpx.Response:
+        calls.append(url)
+        if url == "https://example.com/admin":
+            return httpx.Response(
+                301,
+                headers={"Location": "/admin/"},
+                request=httpx.Request("GET", url),
+            )
+        elif url == "https://example.com/admin/":
+            return httpx.Response(
+                302,
+                headers={"Location": "/admin/login/?next=/admin/"},
+                request=httpx.Request("GET", url),
+            )
+        return httpx.Response(404, request=httpx.Request("GET", url))
+
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock:
+        mock.side_effect = mock_get
+        prober = FrameworkProber(
+            [],
+            "https://example.com",
+            seclists_dir=seclists_dir,
+        )
+        result = await prober.collect()
+
+    endpoints = result.data["framework_endpoints"]
+    assert len(endpoints) == 0
+    assert "https://example.com/admin" in calls
+    assert "https://example.com/admin/" in calls
+
+
+@pytest.mark.asyncio
+async def test_trailing_slash_redirect_to_valid_json_kept(tmp_path: Path) -> None:
+    """Verify that a 301 redirect to the same path with a trailing slash is resolved,
+    and if it then returns a 200 with valid JSON, it is kept.
+    """
+    seclists_dir = tmp_path / "seclists"
+    seclists_dir.mkdir()
+
+    files_meta = {
+        "actions.txt": {
+            "tech_match": [],
+            "path_count": 1,
+            "always_probe": True,
+        }
+    }
+    _write_manifest(seclists_dir, files_meta)
+    _write_wordlist(seclists_dir, "actions.txt", ["/admin"])
+
+    async def mock_get(url: str, **kwargs: Any) -> httpx.Response:
+        if url == "https://example.com/admin":
+            return httpx.Response(
+                301,
+                headers={"Location": "/admin/"},
+                request=httpx.Request("GET", url),
+            )
+        elif url == "https://example.com/admin/":
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/json"},
+                text='{"status": "ok"}',
+                request=httpx.Request("GET", url),
+            )
+        return httpx.Response(404, request=httpx.Request("GET", url))
+
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock:
+        mock.side_effect = mock_get
+        prober = FrameworkProber(
+            [],
+            "https://example.com",
+            seclists_dir=seclists_dir,
+        )
+        result = await prober.collect()
+
+    endpoints = result.data["framework_endpoints"]
+    assert len(endpoints) == 1
+    assert endpoints[0]["status_code"] == 200
+    assert endpoints[0]["top_level_keys"] == ["status"]
