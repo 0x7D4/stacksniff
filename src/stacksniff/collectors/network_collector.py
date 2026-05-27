@@ -160,8 +160,6 @@ class NetworkCollector:
                     # ---- attach request/response listeners BEFORE nav ----
                     def _on_request(request) -> None:  # type: ignore[no-untyped-def]
                         rtype = request.resource_type
-                        if rtype not in ("xhr", "fetch"):
-                            return
                         req_headers = {}
                         with contextlib.suppress(Exception):
                             req_headers = dict(request.headers)
@@ -216,9 +214,11 @@ class NetworkCollector:
                         try:
                             await page.goto(
                                 current_url,
-                                wait_until="networkidle",
+                                wait_until="load",
                                 timeout=nav_timeout_ms,
                             )
+                            await page.wait_for_load_state("networkidle", timeout=nav_timeout_ms)
+                            await page.wait_for_timeout(2000)
                             if current_depth > 0:
                                 crawled_count += 1
                         except Exception as nav_exc:
@@ -303,6 +303,8 @@ class NetworkCollector:
                         # Probe entries (resource_type="probe") always pass through.
                         entry_rtype = entry.get("resource_type", "")
                         if entry_rtype != "probe":
+                            if entry_rtype not in ("xhr", "fetch"):
+                                continue
                             try:
                                 entry_netloc = urlparse(entry["url"]).netloc.lower()
                             except Exception:

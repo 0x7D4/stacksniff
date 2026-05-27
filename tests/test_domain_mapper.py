@@ -598,6 +598,8 @@ async def test_crtsh_retry_on_timeout() -> None:
     call_count = 0
 
     async def mock_get(url: str, **kwargs: Any) -> httpx.Response:
+        if "hackertarget.com" in url:
+            raise httpx.TimeoutException("HackerTarget timed out", request=MagicMock())
         nonlocal call_count
         call_count += 1
         if call_count <= 2:
@@ -918,21 +920,27 @@ async def test_website_suffix_fallback_when_no_script_match() -> None:
 
 
 @pytest.mark.asyncio
-async def test_hackertarget_fallback_when_crtsh_fails() -> None:
-    """If crt.sh fails, fallback to HackerTarget and verify subdomain parsing + source field."""
+async def test_hackertarget_is_tried_first() -> None:
+    """Verify that HackerTarget is attempted first and, if successful, crt.sh is skipped."""
     mapper = DomainMapper(
         base_url="https://example.com",
         har_entries=[],
         fingerprint_store=_make_store(),
     )
 
+    get_urls = []
+
     async def mock_get(url, *args, **kwargs):
-        if "crt.sh" in url:
-            raise httpx.TimeoutException("crt.sh timed out")
-        elif "hackertarget.com" in url:
+        get_urls.append(url)
+        if "hackertarget.com" in url:
             mock_resp = MagicMock()
             mock_resp.status_code = 200
             mock_resp.text = "api.example.com,1.2.3.4\ndev.example.com,5.6.7.8\n"
+            return mock_resp
+        elif "crt.sh" in url:
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_resp.json = lambda: [{"name_value": "api.example.com"}]
             return mock_resp
         raise ValueError(f"Unexpected get URL: {url}")
 
@@ -951,6 +959,49 @@ async def test_hackertarget_fallback_when_crtsh_fails() -> None:
     assert subs[0]["ct_source"] == "hackertarget"
     assert subs[1]["subdomain"] == "dev.example.com"
     assert subs[1]["ct_source"] == "hackertarget"
+
+    # Verify crt.sh was not called
+    assert any("hackertarget.com" in u for u in get_urls)
+    assert not any("crt.sh" in u for u in get_urls)
+
+
+@pytest.mark.asyncio
+async def test_crtsh_fallback_when_hackertarget_fails() -> None:
+    """If HackerTarget fails, fallback to crt.sh and verify subdomain parsing + source field."""
+    mapper = DomainMapper(
+        base_url="https://example.com",
+        har_entries=[],
+        fingerprint_store=_make_store(),
+    )
+
+    async def mock_get(url, *args, **kwargs):
+        if "hackertarget.com" in url:
+            raise httpx.TimeoutException("HackerTarget timed out")
+        elif "crt.sh" in url:
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_resp.json = lambda: [
+                {"name_value": "api.example.com"},
+                {"name_value": "dev.example.com"}
+            ]
+            return mock_resp
+        raise ValueError(f"Unexpected get URL: {url}")
+
+    async def mock_head(url, *args, **kwargs):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {"Content-Type": "text/html"}
+        return mock_resp
+
+    with patch("httpx.AsyncClient.get", side_effect=mock_get), \
+         patch("httpx.AsyncClient.head", side_effect=mock_head):
+        subs = await mapper._discover_internal_subdomains()
+
+    assert len(subs) == 2
+    assert subs[0]["subdomain"] == "api.example.com"
+    assert subs[0]["ct_source"] == "crt.sh"
+    assert subs[1]["subdomain"] == "dev.example.com"
+    assert subs[1]["ct_source"] == "crt.sh"
 
 
 @pytest.mark.asyncio

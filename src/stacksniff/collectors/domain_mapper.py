@@ -516,20 +516,10 @@ class DomainMapper:
         Sets self._ct_source to the name of the source that succeeded.
         If all sources fail, log warning with all three source errors and return empty list.
         """
-        self._ct_source = "crt.sh"
+        self._ct_source = "hackertarget"
         errors = []
 
-        # Source 1: crt.sh
-        try:
-            subdomains = await self._fetch_crtsh_subdomains_inner()
-            if subdomains:
-                self._ct_source = "crt.sh"
-                return subdomains
-            errors.append("crt.sh returned 0 subdomains")
-        except Exception as e:
-            errors.append(f"crt.sh error: {e}")
-
-        # Source 2: HackerTarget
+        # Source 1: HackerTarget
         try:
             subdomains = await self._fetch_hackertarget_subdomains()
             if subdomains:
@@ -538,6 +528,16 @@ class DomainMapper:
             errors.append("HackerTarget returned 0 subdomains")
         except Exception as e:
             errors.append(f"HackerTarget error: {e}")
+
+        # Source 2: crt.sh
+        try:
+            subdomains = await self._fetch_crtsh_subdomains_inner()
+            if subdomains:
+                self._ct_source = "crt.sh"
+                return subdomains
+            errors.append("crt.sh returned 0 subdomains")
+        except Exception as e:
+            errors.append(f"crt.sh error: {e}")
 
         # Source 3: CertSpotter
         try:

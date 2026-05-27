@@ -715,3 +715,79 @@ async def test_redirect_same_domain_non_nav_kept(tmp_path: Path) -> None:
     assert endpoints[0]["status_code"] == 301
     assert endpoints[0]["status_label"] == "redirect"
     assert endpoints[0]["redirect_location"] == "https://example.com/api/v1.0"
+
+
+@pytest.mark.asyncio
+async def test_actions_txt_html_200_always_discarded(tmp_path: Path) -> None:
+    """Verify that any 200 text/html response from generic wordlists (actions.txt) is discarded."""
+    seclists_dir = tmp_path / "seclists"
+    seclists_dir.mkdir()
+
+    files_meta = {
+        "actions.txt": {
+            "tech_match": [],
+            "path_count": 1,
+            "always_probe": True,
+        }
+    }
+    _write_manifest(seclists_dir, files_meta)
+    _write_wordlist(seclists_dir, "actions.txt", ["/admin"])
+
+    async def mock_get(url: str, **kwargs: Any) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            text='{"status": "exposed"}',
+            request=httpx.Request("GET", url),
+        )
+
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock:
+        mock.side_effect = mock_get
+        prober = FrameworkProber(
+            [],
+            "https://example.com",
+            seclists_dir=seclists_dir,
+        )
+        result = await prober.collect()
+
+    endpoints = result.data["framework_endpoints"]
+    assert len(endpoints) == 0
+
+
+@pytest.mark.asyncio
+async def test_framework_specific_html_200_json_body_kept(tmp_path: Path) -> None:
+    """Verify that a 200 text/html response from framework-specific lists is kept if body is valid JSON."""
+    seclists_dir = tmp_path / "seclists"
+    seclists_dir.mkdir()
+
+    files_meta = {
+        "django.txt": {
+            "tech_match": ["django"],
+            "path_count": 1,
+            "always_probe": False,
+        }
+    }
+    _write_manifest(seclists_dir, files_meta)
+    _write_wordlist(seclists_dir, "django.txt", ["/admin/"])
+
+    async def mock_get(url: str, **kwargs: Any) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            text='{"valid": "json"}',
+            request=httpx.Request("GET", url),
+        )
+
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock:
+        mock.side_effect = mock_get
+        prober = FrameworkProber(
+            [_make_tech("Django")],
+            "https://example.com",
+            seclists_dir=seclists_dir,
+        )
+        result = await prober.collect()
+
+    endpoints = result.data["framework_endpoints"]
+    assert len(endpoints) == 1
+    assert endpoints[0]["status_code"] == 200
+    assert endpoints[0]["top_level_keys"] == ["valid"]

@@ -316,16 +316,22 @@ class FrameworkProber:
             if status not in _STATUS_MAP:
                 return None
 
-            # Content-type filtering (Fix 2): discard 200 HTML pages that aren't
-            # valid JSON (e.g. SPA catch-all pages, soft 404s).
-            content_type = response.headers.get("content-type", "") or ""
-            ct_lower = content_type.lower().strip()
+            ct = response.headers.get("content-type", "") or ""
+            ct_lower = ct.lower().strip()
 
-            if status == 200 and ct_lower.startswith("text/html"):
-                try:
-                    json.loads(response.text)
-                except (json.JSONDecodeError, ValueError, Exception):
-                    return None
+            logger.debug("probe %s status=%d ct=%s", path, status, ct)
+
+            if status == 200:
+                if source_wordlist in ("actions.txt", "objects.txt"):
+                    accepted_types = ("application/json", "application/yaml", "application/xml", "text/plain")
+                    if not any(ct_lower.startswith(t) for t in accepted_types):
+                        return None
+                else:
+                    if ct_lower.startswith("text/html"):
+                        try:
+                            json.loads(response.text)
+                        except (json.JSONDecodeError, ValueError, Exception):
+                            return None
 
             # Redirect-noise filter (Fix 2b): discard 3xx responses that are
             # CMS-style rewrites rather than real API redirects.  Patterns that
@@ -383,7 +389,7 @@ class FrameworkProber:
                 "url": url,
                 "status_code": status,
                 "status_label": label,
-                "content_type": content_type or None,
+                "content_type": ct or None,
                 "confidence": confidence,
                 "source_wordlist": source_wordlist,
                 "top_level_keys": top_level_keys,

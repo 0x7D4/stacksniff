@@ -146,7 +146,7 @@ class Scanner:
             js_ok = _safe_res(js_res)
             net_ok = _safe_res(net_res)
 
-            logger.debug("har_entries count: %d", len(net_ok.data.get("har_entries", [])))
+            logger.debug("net_ok har_entries count: %d", len(net_ok.data.get("har_entries", [])))
 
             js_globals = js_ok.data.get("js_globals", {})
 
@@ -260,6 +260,8 @@ class Scanner:
         har_entries: list[dict] = []
         if browser and playwright_installed:
             har_entries = net_ok.data.get("har_entries", [])
+
+        logger.debug("domain_mapper har_entries received: %d", len(har_entries))
 
         prober = FrameworkProber(tech_matches, url, timeout=timeout)
         domain_mapper = DomainMapper(
