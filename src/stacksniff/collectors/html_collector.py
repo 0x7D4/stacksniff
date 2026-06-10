@@ -29,7 +29,7 @@ from typing import Any
 import httpx
 from bs4 import BeautifulSoup, Comment
 
-from stacksniff.collectors.base import CollectorResult
+from stacksniff.collectors.base import DEFAULT_USER_AGENT, CollectorResult
 
 logger = logging.getLogger(__name__)
 
@@ -59,11 +59,7 @@ class HtmlCollector:
         *,
         timeout: float = _DEFAULT_TIMEOUT,
         max_redirects: int = _MAX_REDIRECTS,
-        user_agent: str = (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/125.0.0.0 Safari/537.36"
-        ),
+        user_agent: str = DEFAULT_USER_AGENT,
     ) -> None:
         self._timeout = timeout
         self._max_redirects = max_redirects
@@ -111,6 +107,7 @@ class HtmlCollector:
                     "dom": _extract_dom_evidence(soup, selectors),
                     "raw_html": raw_html[:_RAW_HTML_MAX_LEN],
                     "final_url": str(response.url),
+                    "manifest_url": _extract_manifest_url(soup),
                 }
 
         except httpx.TimeoutException as exc:
@@ -253,3 +250,21 @@ def _extract_dom_evidence(soup: BeautifulSoup, selectors: set[str]) -> dict[str,
             # BeautifulSoup select might throw syntax error on some selectors
             pass
     return dom_findings
+
+
+def _extract_manifest_url(soup: BeautifulSoup) -> str | None:
+    """Return the ``href`` of the first ``<link rel="manifest">`` tag, or ``None``.
+
+    PWA fingerprinting relies on the presence of a Web App Manifest link.
+    Extracting it separately ensures it is available even when DOM selector
+    extraction is skipped or the CSS selector form differs from what
+    BeautifulSoup supports.
+    """
+    tag = soup.find("link", rel=lambda r: isinstance(r, list) and "manifest" in r
+                                          or r == "manifest")
+    if tag is None:
+        return None
+    href = tag.get("href")
+    if isinstance(href, list):
+        href = href[0] if href else None
+    return str(href).strip() if href else None

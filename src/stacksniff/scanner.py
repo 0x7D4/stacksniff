@@ -98,6 +98,7 @@ class Scanner:
         meta_tags = html_ok.data.get("meta_tags", {})
         script_srcs = html_ok.data.get("script_srcs", [])
         link_hrefs = html_ok.data.get("link_hrefs", [])
+        manifest_url = html_ok.data.get("manifest_url")
 
         # Collect static DOM evidence
         dom_evidence = html_ok.data.get("dom", {}).copy()
@@ -228,6 +229,7 @@ class Scanner:
             spec_title=s_title,
             spec_version=s_version,
             spec_methods=s_methods,
+            manifest_url=manifest_url,
         )
 
         # -------------------------------------------------------------------
@@ -244,6 +246,8 @@ class Scanner:
             "link_hrefs": evidence.link_hrefs,
             "js_globals": evidence.js_globals,
             "dom": evidence.dom,
+            "manifest_url": evidence.manifest_url,
+            "network_requests": [req.url for req in evidence.network_requests],
         }
 
         matcher = FingerprintMatcher(store)
@@ -291,8 +295,8 @@ class Scanner:
 
         framework_endpoints = probe_result.data.get("framework_endpoints", [])
         evidence.framework_endpoints = framework_endpoints
-        evidence.external_dependencies = domain_result.data.get("external_dependencies", [])
-        evidence.internal_subdomains = domain_result.data.get("internal_subdomains", [])
+        evidence.runtime_dependencies = domain_result.data.get("external_dependencies", [])
+        evidence.discovered_subdomains = domain_result.data.get("internal_subdomains", [])
 
         if progress_callback:
             progress_callback("framework_probe", "completed")
@@ -318,8 +322,8 @@ class Scanner:
             api_endpoints=detected_endpoints,
             meta=meta,
             openapi_spec_found=bool(evidence.spec_endpoints),
-            external_dependencies=evidence.external_dependencies,
-            internal_subdomains=evidence.internal_subdomains,
+            runtime_dependencies=evidence.runtime_dependencies,
+            discovered_subdomains=evidence.discovered_subdomains,
         )
 
 

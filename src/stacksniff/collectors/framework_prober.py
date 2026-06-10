@@ -348,15 +348,42 @@ class FrameworkProber:
                         logger.debug("Failed to resolve trailing slash redirect: %s", e)
 
             if status == 200:
-                if source_wordlist.endswith(("actions.txt", "objects.txt")):
-                    accepted_types = ("application/json", "application/yaml", "application/xml", "text/plain")
-                    if not any(ct_lower.startswith(t) for t in accepted_types):
+                # Generic wordlists (no framework context): only accept
+                # structured data content-types — HTML is always noise here.
+                _GENERIC_WORDLISTS = ("actions.txt", "objects.txt", "api-endpoints.txt")
+                _ACCEPTED_TYPES = (
+                    "application/json",
+                    "application/yaml",
+                    "application/xml",
+                    "application/vnd.",
+                    "text/plain",
+                    "text/yaml",
+                    "text/xml",
+                    "text/csv",
+                )
+                if source_wordlist.endswith(_GENERIC_WORDLISTS):
+                    if not any(ct_lower.startswith(t) for t in _ACCEPTED_TYPES):
                         return None
-                else:
-                    if ct_lower.startswith("text/html"):
-                        try:
-                            json.loads(response.text)
-                        except (json.JSONDecodeError, ValueError, Exception):
+                elif ct_lower.startswith("text/html") or (not ct_lower and "html" in response.text[:200].lower()):
+                    # For all other wordlists: HTML responses are soft-404s unless:
+                    #   (a) the body parses as JSON (Content-Type lie), or
+                    #   (b) the response is ≤10KB AND the path has a file extension
+                    body_text = response.text
+                    try:
+                        json.loads(body_text)
+                        # Parsed as JSON — keep it
+                    except (json.JSONDecodeError, ValueError, Exception):
+                        # Not JSON — apply size + extension heuristics
+                        path_no_qs = urlparse(url).path
+                        path_has_ext = "." in path_no_qs.split("/")[-1] if "/" in path_no_qs else "." in path_no_qs
+                        body_large = len(body_text) > 10_240  # 10 KB
+                        if body_large or not path_has_ext:
+                            logger.debug(
+                                "Prober: discarding %s (HTML soft-404: large=%s, no_ext=%s)",
+                                url,
+                                body_large,
+                                not path_has_ext,
+                            )
                             return None
 
             # Redirect-noise filter (Fix 2b): discard 3xx responses that are

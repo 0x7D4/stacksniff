@@ -26,6 +26,52 @@ def _normalize_js_key(k: str) -> str:
     return k.lower().strip()
 
 
+_SELECTOR_PATTERN = re.compile(
+    r"^(?P<tag>[a-zA-Z0-9_-]*)"
+    r"\[(?P<attr>[a-zA-Z0-9_-]+)"
+    r"(?P<op>[~|^$*]?=)"
+    r"['\"]?(?P<val>[^'\"\]]+)['\"]?\]$"
+)
+
+
+def _match_network_request_to_selector(url: str, sel: str) -> dict[str, Any] | None:
+    """Match a network request URL to a simple attribute selector (e.g. link[href*='fonts.g'])."""
+    match = _SELECTOR_PATTERN.match(sel)
+    if not match:
+        return None
+
+    gd = match.groupdict()
+    attr = gd["attr"]
+    op = gd["op"]
+    val = gd["val"]
+
+    # Only match attributes representing resource URLs
+    if attr not in ("href", "src", "data-href"):
+        return None
+
+    matched = False
+    if op == "=":
+        matched = (url == val or (not val.startswith(("http:", "https:", "//")) and url.endswith(val)))
+    elif op == "*=":
+        matched = (val in url)
+    elif op == "^=":
+        matched = url.startswith(val)
+    elif op == "$=":
+        matched = url.endswith(val)
+    elif op == "~=":
+        matched = (val in url.split())
+    else:
+        matched = (val in url)
+
+    if matched:
+        return {
+            "text": "",
+            "attributes": {attr: url},
+            "properties": {attr: url},
+        }
+    return None
+
+
 class FingerprintMatcher:
     """Matches collected evidence against technology fingerprints."""
 
@@ -58,13 +104,45 @@ class FingerprintMatcher:
         meta_tags = {k.lower(): v for k, v in evidence_data.get("meta_tags", {}).items()}
         script_srcs = list(evidence_data.get("script_srcs", []))
         link_hrefs = list(evidence_data.get("link_hrefs", []))
+        network_requests = list(evidence_data.get("network_requests", []))
         raw_html = str(evidence_data.get("html", "") or evidence_data.get("raw_html", ""))
         js_globals = {
             _normalize_js_key(k): v for k, v in evidence_data.get("js_globals", {}).items()
         }
+        manifest_url: str | None = evidence_data.get("manifest_url")
 
-        # Combine scripts and link hrefs for broader script matching
-        all_scripts = script_srcs + link_hrefs
+        # Combine scripts, link hrefs, and network requests for broader script matching
+        all_scripts = script_srcs + link_hrefs + network_requests
+
+        # Inject synthetic DOM entries from dedicated evidence fields so that
+        # fingerprints using DOM selectors can match without a live browser.
+        dom_data: dict[str, Any] = dict(evidence_data.get("dom", {}))
+
+        # PWA: synthesise link[rel='manifest'] entry if manifest_url is known
+        if manifest_url:
+            pwa_sel = "link[rel='manifest']"
+            if pwa_sel not in dom_data:
+                dom_data[pwa_sel] = [
+                    {
+                        "text": "",
+                        "attributes": {"rel": "manifest", "href": manifest_url},
+                        "properties": {"rel": "manifest", "href": manifest_url},
+                    }
+                ]
+
+        # Synthesize DOM entries from network requests for style/link/script selectors
+        all_dom_selectors = self.store.get_all_dom_selectors()
+        for sel in all_dom_selectors:
+            if sel not in dom_data:
+                findings = []
+                sub_selectors = [s.strip() for s in sel.split(",")]
+                for sub_sel in sub_selectors:
+                    for url in network_requests:
+                        finding = _match_network_request_to_selector(url, sub_sel)
+                        if finding:
+                            findings.append(finding)
+                if findings:
+                    dom_data[sel] = findings
 
         matches: list[TechMatch] = []
 
@@ -272,8 +350,7 @@ class FingerprintMatcher:
                             )
                         )
 
-            # 7. Match DOM selectors
-            dom_data = evidence_data.get("dom", {})
+            # 7. Match DOM selectors  (dom_data is built above with synthetic entries)
             if fp.dom:
                 if isinstance(fp.dom, list):
                     for sel in fp.dom:

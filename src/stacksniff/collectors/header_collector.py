@@ -30,7 +30,7 @@ from typing import Any
 
 import httpx
 
-from stacksniff.collectors.base import CollectorResult
+from stacksniff.collectors.base import DEFAULT_USER_AGENT, CollectorResult
 
 logger = logging.getLogger(__name__)
 
@@ -75,11 +75,7 @@ class HeaderCollector:
         *,
         timeout: float = _DEFAULT_TIMEOUT,
         max_redirects: int = _MAX_REDIRECTS,
-        user_agent: str = (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/125.0.0.0 Safari/537.36"
-        ),
+        user_agent: str = DEFAULT_USER_AGENT,
     ) -> None:
         self._timeout = timeout
         self._max_redirects = max_redirects

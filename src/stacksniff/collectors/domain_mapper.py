@@ -774,15 +774,11 @@ class DomainMapper:
         redirect_location = lower_headers.get("location") if status in {301, 302, 307, 308} else None
 
         # Tech detection from response headers
-        server = lower_headers.get("server", "")
-        x_powered = lower_headers.get("x-powered-by", "")
-        header_text = f"{server} {x_powered}".strip()
-
         detected_tech: str | None = None
         detected_category: str | None = None
-        if header_text:
-            detected_tech, detected_category = self._classify_by_header_text(
-                header_text, fingerprints
+        if lower_headers:
+            detected_tech, detected_category = self._classify_by_headers(
+                lower_headers, fingerprints
             )
 
         # Fix 3: If a redirect_location points to a completely different base domain
@@ -822,12 +818,12 @@ class DomainMapper:
             "ct_source": ct_source,
         }
 
-    def _classify_by_header_text(
+    def _classify_by_headers(
         self,
-        header_text: str,
+        lower_headers: dict[str, str],
         fingerprints: list[Fingerprint],
     ) -> tuple[str | None, str | None]:
-        """Match header text (Server / X-Powered-By) against fingerprint header patterns."""
+        """Match response headers against fingerprint header patterns."""
         best_name: str | None = None
         best_category: str | None = None
         best_confidence: float = -1.0
@@ -835,13 +831,15 @@ class DomainMapper:
         for fp in fingerprints:
             if fp.confidence <= best_confidence:
                 continue
-            for _key, pattern_str in fp.headers.items():
-                if self._is_specific_match(pattern_str, header_text):
-                    if fp.confidence > best_confidence:
-                        best_name = fp.name
-                        best_category = fp.category
-                        best_confidence = fp.confidence
-                    break
+            for header_key, pattern_str in fp.headers.items():
+                val = lower_headers.get(header_key.lower())
+                if val is not None:
+                    if self._is_specific_match(pattern_str, val):
+                        if fp.confidence > best_confidence:
+                            best_name = fp.name
+                            best_category = fp.category
+                            best_confidence = fp.confidence
+                        break
 
         # Apply minimum confidence threshold (Fix 3)
         if best_confidence < 0.75:

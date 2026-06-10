@@ -173,3 +173,117 @@ def test_matcher_dom_rules() -> None:
     # confidence = base (0.7) + version matched (+0.1) = 0.8
     assert font_match.confidence == 0.8
     assert font_match.version == "Roboto:400,700"
+
+
+def test_pwa_detected_via_manifest_url(store: FingerprintStore) -> None:
+    """PWA should be detected when manifest_url is present in evidence.
+
+    The matcher injects a synthetic ``link[rel='manifest']`` DOM entry so
+    the PWA fingerprint's DOM selector rule fires without needing a browser.
+    """
+    matcher = FingerprintMatcher(store)
+
+    evidence = {
+        "manifest_url": "/manifest.json",
+    }
+
+    results = matcher.match(evidence)
+    pwa_match = next((m for m in results if m.name == "PWA"), None)
+
+    assert pwa_match is not None, "PWA should be detected when manifest_url is present"
+    assert pwa_match.confidence >= 0.75
+    assert any(e.source == "dom" for e in pwa_match.evidence)
+
+
+def test_pwa_not_detected_without_manifest_url(store: FingerprintStore) -> None:
+    """PWA should NOT be detected when manifest_url is absent."""
+    matcher = FingerprintMatcher(store)
+
+    evidence = {
+        "headers": {"Server": "nginx"},
+    }
+
+    results = matcher.match(evidence)
+    pwa_match = next((m for m in results if m.name == "PWA"), None)
+
+    # Should not match from headers alone
+    assert pwa_match is None, "PWA should not be detected without manifest_url or DOM signal"
+
+
+def test_closure_library_globals_probed() -> None:
+    """JsCollector._JS_GLOBALS must include Closure Library globals."""
+    from stacksniff.collectors.js_collector import _JS_GLOBALS
+
+    closure_globals = {
+        "window.goog",
+        "window.CLOSURE_BASE_PATH",
+        "window.goog?.require",
+    }
+    for g in closure_globals:
+        assert g in _JS_GLOBALS, f"Missing Closure Library global: {g}"
+
+
+def test_google_font_api_detected_via_network_requests(store: FingerprintStore) -> None:
+    """Google Font API should be detected when fonts.googleapis.com is in network requests."""
+    matcher = FingerprintMatcher(store)
+
+    evidence = {
+        "network_requests": [
+            "https://fonts.googleapis.com/css?family=Roboto:400,700",
+            "https://fonts.gstatic.com/s/roboto/v30/KFOmCnqEu92Fr1Mu4mxK.woff2",
+        ]
+    }
+
+    results = matcher.match(evidence)
+    font_match = next((m for m in results if m.name == "Google Font API"), None)
+
+    assert font_match is not None, "Google Font API should be detected from network requests"
+    assert font_match.confidence == 0.75
+    assert font_match.version is None
+    assert any(e.source == "dom" for e in font_match.evidence)
+
+
+def test_adobe_fonts_detected_via_network_requests(store: FingerprintStore) -> None:
+    """Adobe Fonts should be detected when use.typekit.net is in network requests."""
+    matcher = FingerprintMatcher(store)
+
+    evidence = {
+        "network_requests": [
+            "https://use.typekit.net/abc.css",
+        ]
+    }
+
+    results = matcher.match(evidence)
+    adobe_match = next((m for m in results if m.name == "Adobe Fonts"), None)
+
+    assert adobe_match is not None, "Adobe Fonts should be detected from network requests"
+    assert adobe_match.confidence == 0.75
+    assert any(e.source == "dom" for e in adobe_match.evidence)
+
+
+def test_pwa_detected_via_service_worker_dom_injection(store: FingerprintStore) -> None:
+    """PWA should be detected when a service worker is registered.
+
+    This simulates the JsCollector injecting the link[rel='manifest'] selector findings.
+    """
+    matcher = FingerprintMatcher(store)
+
+    evidence = {
+        "dom": {
+            "link[rel='manifest']": [
+                {
+                    "text": "",
+                    "attributes": {"rel": "manifest", "href": "/manifest.json"},
+                    "properties": {"rel": "manifest", "href": "/manifest.json"},
+                }
+            ]
+        }
+    }
+
+    results = matcher.match(evidence)
+    pwa_match = next((m for m in results if m.name == "PWA"), None)
+
+    assert pwa_match is not None, "PWA should be detected when manifest selector is in DOM"
+    assert pwa_match.confidence >= 0.75
+
+

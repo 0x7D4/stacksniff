@@ -11,8 +11,23 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 # ---------------------------------------------------------------------------
+# Shared constants
+# ---------------------------------------------------------------------------
+
+# Modern Chrome user-agent used across all collectors.  Websites (notably
+# Google) serve different JavaScript / DOM content depending on the Chrome
+# version declared in the UA.  Keeping this up-to-date is critical for
+# accurate fingerprinting.  Update the major version roughly every quarter.
+DEFAULT_USER_AGENT: str = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/137.0.0.0 Safari/537.36"
+)
+
+# ---------------------------------------------------------------------------
 # Shared data structures
 # ---------------------------------------------------------------------------
+
 
 
 @dataclass(frozen=True, slots=True)

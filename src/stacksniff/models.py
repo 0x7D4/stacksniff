@@ -66,8 +66,8 @@ class ScanResult:
     api_endpoints: list[DetectedEndpoint]
     meta: ScanMeta
     openapi_spec_found: bool = field(default=False)
-    external_dependencies: list[dict[str, Any]] = field(default_factory=list)
-    internal_subdomains: list[dict[str, Any]] = field(default_factory=list)
+    runtime_dependencies: list[dict[str, Any]] = field(default_factory=list)
+    discovered_subdomains: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert the ScanResult to a JSON-serializable dictionary."""
@@ -101,5 +101,6 @@ class CollectedEvidence:
     spec_version: str | None = None
     spec_methods: dict[str, list[str]] = field(default_factory=dict)
     framework_endpoints: list[dict[str, Any]] = field(default_factory=list)
-    external_dependencies: list[dict[str, Any]] = field(default_factory=list)
-    internal_subdomains: list[dict[str, Any]] = field(default_factory=list)
+    runtime_dependencies: list[dict[str, Any]] = field(default_factory=list)
+    discovered_subdomains: list[dict[str, Any]] = field(default_factory=list)
+    manifest_url: str | None = None  # href from <link rel="manifest"> if present

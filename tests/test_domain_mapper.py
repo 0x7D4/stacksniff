@@ -1076,3 +1076,43 @@ async def test_all_sources_fail_returns_empty() -> None:
     assert "HackerTarget" in warning_arg
     assert "CertSpotter" in warning_arg
 
+
+@pytest.mark.asyncio
+async def test_subdomain_specific_header_matching() -> None:
+    """Verify that subdomain header matching matches specific keys rather than any text matching."""
+    fp_gcs = _make_fingerprint(
+        name="Google Cloud Storage",
+        category="miscellaneous",
+        headers={"x-goog-storage-class": r"^\w+$"},
+        confidence=0.75,
+    )
+    fp_vercel = _make_fingerprint(
+        name="Vercel",
+        category="PaaS",
+        headers={"server": r"^now|Vercel$"},
+        confidence=0.75,
+    )
+    store = _make_store(fp_gcs, fp_vercel)
+
+    mapper = DomainMapper(
+        base_url="https://example.com",
+        har_entries=[],
+        fingerprint_store=store,
+    )
+
+    with patch.object(
+        mapper, "_fetch_crtsh_subdomains", new=AsyncMock(return_value=["rootviz.example.com"])
+    ):
+        mock_resp = MagicMock(spec=httpx.Response)
+        mock_resp.status_code = 200
+        mock_resp.headers = {"server": "Vercel", "content-type": "text/html"}
+
+        with patch("httpx.AsyncClient.head", new=AsyncMock(return_value=mock_resp)):
+            result = await mapper.collect()
+
+    subs = result.data.get("internal_subdomains", [])
+    assert len(subs) == 1
+    sub = subs[0]
+    assert sub["detected_tech"] == "Vercel"
+    assert sub["detected_category"] == "PaaS"
+

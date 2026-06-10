@@ -55,6 +55,12 @@ _JS_GLOBALS: tuple[str, ...] = (
     "window.__REDUX_STORE__",
     "window.supabase",
     "window.__FIREBASE_DEFAULTS__",
+    # Closure Library
+    "window.goog",
+    "window.goog?.CLOSURE_NO_DEPS",
+    "window.CLOSURE_BASE_PATH",
+    "window.goog?.require",
+    "window.WebFonts",
 )
 
 # JS snippet template injected into the page.  For each expression we
@@ -185,11 +191,6 @@ class JsCollector:
                 browser = await pw.chromium.launch(headless=True)
                 try:
                     context = await browser.new_context(
-                        user_agent=(
-                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                            "AppleWebKit/537.36 (KHTML, like Gecko) "
-                            "Chrome/125.0.0.0 Safari/537.36"
-                        ),
                         java_script_enabled=True,
                         ignore_https_errors=True,
                     )
@@ -260,6 +261,34 @@ class JsCollector:
                             dom_results = await page.evaluate(dom_js, dom_selectors)
                         except Exception as dom_exc:
                             logger.warning("DOM evaluation failed on %s: %s", url, dom_exc)
+
+                    # Check for service worker registration
+                    sw_registered = False
+                    try:
+                        sw_registered = await page.evaluate(
+                            "async () => { "
+                            "  try { "
+                            "    if (navigator.serviceWorker) { "
+                            "      const regs = await navigator.serviceWorker.getRegistrations(); "
+                            "      return regs && regs.length > 0; "
+                            "    } "
+                            "  } catch (_) {} "
+                            "  return false; "
+                            "}"
+                        )
+                    except Exception as sw_exc:
+                        logger.debug("Failed to query service workers: %s", sw_exc)
+
+                    if sw_registered:
+                        pwa_sel = "link[rel='manifest']"
+                        if pwa_sel not in dom_results:
+                            dom_results[pwa_sel] = [
+                                {
+                                    "text": "",
+                                    "attributes": {"rel": "manifest", "href": "/manifest.json"},
+                                    "properties": {"rel": "manifest", "href": "/manifest.json"},
+                                }
+                            ]
 
                     result.data = {
                         "js_globals": js_results,

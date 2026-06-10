@@ -265,8 +265,8 @@ def scan(
 
     console.print(endpoints_panel)
 
-    # 3. External Domain Dependencies table
-    ext_deps = getattr(result, "external_dependencies", [])
+    # 3. Runtime Dependencies table
+    ext_deps = getattr(result, "runtime_dependencies", [])
     if ext_deps:
         _category_color = {
             "cdn": "blue",
@@ -277,7 +277,7 @@ def scan(
         }
 
         ext_table = Table(
-            title="External Domain Dependencies",
+            title="Runtime Dependencies",
             box=None,
             show_header=True,
             header_style="bold blue",
@@ -308,11 +308,11 @@ def scan(
         console.print()
         console.print(ext_table)
 
-    # 4. Internal Domain Dependencies table (CT logs)
-    int_subs = getattr(result, "internal_subdomains", [])
+    # 4. Discovered Subdomains table (CT logs)
+    int_subs = getattr(result, "discovered_subdomains", [])
     console.print()
     int_table = Table(
-        title="Internal Domain Dependencies (via CT logs)",
+        title="Discovered Subdomains (Same-Org Attack Surface)",
         box=None,
         show_header=True,
         header_style="bold blue",
@@ -348,7 +348,7 @@ def scan(
 
             int_table.add_row(subdomain_str, status_fmt, tech, rtime)
     else:
-        int_table.add_row("[dim]No subdomains found in CT logs[/dim]", "", "", "")
+        int_table.add_row("[dim]No subdomains discovered in CT logs[/dim]", "", "", "")
 
     console.print(int_table)
 
