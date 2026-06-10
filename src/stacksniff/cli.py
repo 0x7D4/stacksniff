@@ -268,14 +268,6 @@ def scan(
     # 3. Runtime Dependencies table
     ext_deps = getattr(result, "runtime_dependencies", [])
     if ext_deps:
-        _category_color = {
-            "cdn": "blue",
-            "analytics": "yellow",
-            "security": "green",
-            "maps": "cyan",
-            "advertising": "magenta",
-        }
-
         ext_table = Table(
             title="Runtime Dependencies",
             box=None,
@@ -283,24 +275,13 @@ def scan(
             header_style="bold blue",
         )
         ext_table.add_column("Domain", style="bold")
-        ext_table.add_column("Technology")
-        ext_table.add_column("Category")
         ext_table.add_column("Types", style="dim")
         ext_table.add_column("Requests", justify="right")
 
         for dep in sorted(ext_deps, key=lambda d: -d.get("request_count", 0)):
-            cat = dep.get("category", "Unclassified")
-            cat_lower = cat.lower()
-            color = next(
-                (v for k, v in _category_color.items() if k in cat_lower),
-                "dim",
-            )
-            tech_name = dep.get("technology_name") or ""
             types_str = ", ".join(dep.get("resource_types", []))
             ext_table.add_row(
                 dep.get("domain", ""),
-                tech_name,
-                f"[{color}]{cat}[/{color}]",
                 types_str,
                 str(dep.get("request_count", 0)),
             )

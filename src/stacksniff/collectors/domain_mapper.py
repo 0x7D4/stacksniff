@@ -91,6 +91,25 @@ _PROBE_TIMEOUT = 5.0      # per-subdomain HEAD request timeout
 _CRTSH_TIMEOUT = 10.0     # crt.sh JSON fetch timeout
 
 
+# Shared/platform domains for which subdomain/suffix-based tech matching is disallowed
+_SHARED_DOMAINS: frozenset[str] = frozenset({
+    "google.com",
+    "github.com",
+    "github.io",
+    "microsoft.com",
+    "apple.com",
+    "amazon.com",
+    "oracle.com",
+    "cloudflare.com",
+    "wordpress.com",
+    "wordpress.org",
+    "adobe.com",
+    "facebook.com",
+    "twitter.com",
+    "yahoo.com",
+})
+
+
 class DomainMapper:
     """Collector that maps external and internal domain dependencies.
 
@@ -437,6 +456,11 @@ class DomainMapper:
 
         for site_domain, fp_infos in website_lookup.items():
             if domain_lower == site_domain or domain_lower.endswith("." + site_domain):
+                # Suffix match on a shared platform domain is disallowed
+                # (e.g. www.google.com matching google.com suffix is blocked,
+                # but maps.google.com matching maps.google.com exactly is allowed)
+                if domain_lower != site_domain and site_domain in _SHARED_DOMAINS:
+                    continue
                 match_len = len(site_domain)
                 for info in fp_infos:
                     if self._brand_matches(info["name"], domain):

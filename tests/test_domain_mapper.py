@@ -1147,3 +1147,44 @@ async def test_website_suffix_brand_validation() -> None:
     assert dep["technology_name"] is None
     assert dep["category"] == "Unclassified"
 
+
+@pytest.mark.asyncio
+async def test_shared_domain_subdomain_matching_restricted() -> None:
+    """Verify that subdomains of shared platform domains (like www.google.com) do not match
+
+    parent-level technologies (like Google Adsense) via website suffix fallback,
+    but exact matches on the platform domain (like google.com) do.
+    """
+    fp_adsense = Fingerprint(
+        name="Google AdSense",
+        category="Advertising",
+        website="https://www.google.com/adsense/start/",
+        scripts=[],
+        confidence=0.75,
+    )
+    store = _make_store(fp_adsense)
+
+    # 1. Test subdomain request (e.g. www.google.com) -> should NOT match AdSense via website fallback
+    mapper_sub = DomainMapper(
+        base_url="https://example.com",
+        har_entries=[_har("https://www.google.com/some-script.js")],
+        fingerprint_store=store,
+    )
+    with patch.object(mapper_sub, "_discover_internal_subdomains", new=AsyncMock(return_value=[])):
+        result_sub = await mapper_sub.collect()
+
+    ext_sub = result_sub.data.get("external_dependencies", [])
+    assert ext_sub[0]["technology_name"] is None
+
+    # 2. Test exact match request (e.g. google.com) -> should match Google AdSense since it's exact
+    mapper_exact = DomainMapper(
+        base_url="https://example.com",
+        har_entries=[_har("https://google.com/some-script.js")],
+        fingerprint_store=store,
+    )
+    with patch.object(mapper_exact, "_discover_internal_subdomains", new=AsyncMock(return_value=[])):
+        result_exact = await mapper_exact.collect()
+
+    ext_exact = result_exact.data.get("external_dependencies", [])
+    assert ext_exact[0]["technology_name"] == "Google AdSense"
+
