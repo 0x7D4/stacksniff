@@ -1116,3 +1116,34 @@ async def test_subdomain_specific_header_matching() -> None:
     assert sub["detected_tech"] == "Vercel"
     assert sub["detected_category"] == "PaaS"
 
+
+@pytest.mark.asyncio
+async def test_website_suffix_brand_validation() -> None:
+    """Verify that a website suffix match (Step 2) is only accepted if the brand matches."""
+    fp_dfp = Fingerprint(
+        name="DoubleClick for Publishers (DFP)",
+        category="Advertising",
+        website="https://www.google.com/dfp",
+        scripts=[],
+        confidence=0.75,
+    )
+    store = _make_store(fp_dfp)
+
+    har_entries = [_har("https://www.google.com/some-resource.js")]
+
+    mapper = DomainMapper(
+        base_url="https://example.com",
+        har_entries=har_entries,
+        fingerprint_store=store,
+    )
+
+    with patch.object(mapper, "_discover_internal_subdomains", new=AsyncMock(return_value=[])):
+        result = await mapper.collect()
+
+    ext = result.data.get("external_dependencies", [])
+    assert len(ext) == 1
+    dep = ext[0]
+    # Should be classified as Unclassified because DFP brand does not match google.com
+    assert dep["technology_name"] is None
+    assert dep["category"] == "Unclassified"
+

@@ -439,9 +439,10 @@ class DomainMapper:
             if domain_lower == site_domain or domain_lower.endswith("." + site_domain):
                 match_len = len(site_domain)
                 for info in fp_infos:
-                    website_candidates.append(
-                        (match_len, info["confidence"], info["name"], info["category"])
-                    )
+                    if self._brand_matches(info["name"], domain):
+                        website_candidates.append(
+                            (match_len, info["confidence"], info["name"], info["category"])
+                        )
 
         if website_candidates:
             # Longest suffix first, then highest confidence
