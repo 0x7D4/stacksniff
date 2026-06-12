@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -62,7 +63,59 @@ _STATUS_MAP: dict[int, tuple[str, float]] = {
 }
 
 # Generic wordlists that have no framework context — stricter filtering applies.
-_GENERIC_WORDLISTS = ("actions.txt", "objects.txt", "api-endpoints.txt")
+_GENERIC_WORDLISTS = (
+    "actions.txt",
+    "objects.txt",
+    "api-endpoints.txt",
+    "quickhits.txt",
+    "versioning_metafiles.txt",
+    "api-seen-in-wild.txt",
+    "api-seen-in-the-wild.txt",
+)
+
+# Critical paths that should always be prioritized under the cap.
+# Case-insensitive, trailing-slash stripped.
+_CRITICAL_PATHS = {
+    # Hidden files / directories
+    "/.env",
+    "/.git/config",
+    "/.git/head",
+    "/.git/index",
+    "/.htaccess",
+    "/.htpasswd",
+    "/.ftpquota",
+    "/.npmrc",
+    "/.ssh/id_rsa",
+    "/.ssh/id_dsa",
+    "/.ssh/id_ed25519",
+    "/.svn/entries",
+    "/.user.ini",
+    # Configuration files
+    "/composer.json",
+    "/composer.lock",
+    "/package.json",
+    "/package-lock.json",
+    "/web.config",
+    "/wp-config.php",
+    "/config.php",
+    "/configuration.php",
+    "/settings.py",
+    # Metadata / Information
+    "/robots.txt",
+    "/sitemap.xml",
+    "/.well-known/security.txt",
+    # Common API doc / specs
+    "/swagger.json",
+    "/openapi.json",
+    "/api-docs",
+    "/graphql",
+}
+
+
+def _is_high_value_path(path: str) -> bool:
+    """Return True if the path targets a critical security or configuration file."""
+    p = path.rstrip("/").lower()
+    return p in _CRITICAL_PATHS
 
 
 # ---------------------------------------------------------------------------
@@ -227,12 +280,19 @@ class FrameworkProber:
             # Decide inclusion
             include = always_probe
             if not include:
-                # Case-insensitive substring match against detected tech names
+                # Token-based match against detected tech names
                 for keyword in tech_match:
                     keyword_lower = keyword.lower()
-                    if any(keyword_lower in detected for detected in detected_names) or any(
-                        detected in keyword_lower for detected in detected_names
-                    ):
+                    kw_words = set(re.findall(r"\b\w+\b", keyword_lower))
+                    if not kw_words:
+                        continue
+                    matched_keyword = False
+                    for detected in detected_names:
+                        det_words = set(re.findall(r"\b\w+\b", detected))
+                        if kw_words.issubset(det_words) or det_words.issubset(kw_words):
+                            matched_keyword = True
+                            break
+                    if matched_keyword:
                         include = True
                         break
 
@@ -269,9 +329,11 @@ class FrameworkProber:
 
         Priority
         --------
-        1. always_probe paths first (in their wordlist order)
-        2. framework-specific paths sorted by path_count ascending
+        1. Critical/high-value always_probe paths first (e.g. dotfiles, configuration
+           files, and small targeted lists like versioning_metafiles.txt, swagger.txt, graphql.txt)
+        2. Framework-specific paths sorted by path_count ascending
            (smallest lists first → most targeted)
+        3. Remaining non-critical always_probe paths last
 
         Returns
         -------
@@ -294,20 +356,42 @@ class FrameworkProber:
         # Sort framework entries by path_count ascending
         framework_entries.sort(key=lambda x: x[0])
 
+        # Partition always_entries into critical/high-value and remaining
+        critical_always: list[tuple[str, str]] = []
+        other_always: list[tuple[str, str]] = []
+
+        for filename, path in always_entries:
+            is_critical = (
+                filename in ("swagger.txt", "graphql.txt", "versioning_metafiles.txt")
+                or _is_high_value_path(path)
+            )
+            if is_critical:
+                critical_always.append((filename, path))
+            else:
+                other_always.append((filename, path))
+
         # Combine, deduplicate paths, apply cap
         seen_paths: set[str] = set()
         combined: list[tuple[str, str]] = []
 
-        for filename, path in always_entries:
+        # 1. Critical always-probe entries first
+        for filename, path in critical_always:
             if path not in seen_paths:
                 seen_paths.add(path)
                 combined.append((filename, path))
 
+        # 2. Framework-specific entries next (smallest lists first)
         for _, filename, paths in framework_entries:
             for path in paths:
                 if path not in seen_paths:
                     seen_paths.add(path)
                     combined.append((filename, path))
+
+        # 3. Remaining always-probe entries last
+        for filename, path in other_always:
+            if path not in seen_paths:
+                seen_paths.add(path)
+                combined.append((filename, path))
 
         return combined[:_MAX_PROBES]
 

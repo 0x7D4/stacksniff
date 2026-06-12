@@ -1161,6 +1161,23 @@ class TestIsCanonicalRedirect:
             source_wordlist="django.txt",
         )
 
+    def test_fuzzy_slug_quickhits_and_versioning(self) -> None:
+        """quickhits.txt and versioning_metafiles.txt should also trigger fuzzy-slug check."""
+        assert FrameworkProber._is_canonical_redirect(
+            probed_path="/.dat",
+            redirect_location="/data-center-virtualization/",
+            probe_url="https://example.com/.dat",
+            baseline=None,
+            source_wordlist="quickhits.txt",
+        )
+        assert FrameworkProber._is_canonical_redirect(
+            probed_path="/.env",
+            redirect_location="/error-page/",
+            probe_url="https://example.com/.env",
+            baseline=None,
+            source_wordlist="versioning_metafiles.txt",
+        )
+
 
 # ---------------------------------------------------------------------------
 # Test: Canary timeout does not break probing
@@ -1209,4 +1226,82 @@ async def test_canary_timeout_does_not_break_probing(tmp_path: Path) -> None:
     endpoints = result.data["framework_endpoints"]
     assert len(endpoints) == 1
     assert endpoints[0]["url"] == "https://example.com/robots.txt"
+
+
+# ---------------------------------------------------------------------------
+# Test: Token-based technology matching precision
+# ---------------------------------------------------------------------------
+
+
+def test_token_based_tech_matching(tmp_path: Path) -> None:
+    """Verify that keyword matching uses token-based boundaries rather than substring matches."""
+    seclists_dir = tmp_path / "seclists"
+    seclists_dir.mkdir()
+
+    files_meta = {
+        "SAP-NetWeaver.txt": {
+            "tech_match": ["sap"],
+            "path_count": 2,
+            "always_probe": False,
+        }
+    }
+    _write_manifest(seclists_dir, files_meta)
+    _write_wordlist(seclists_dir, "SAP-NetWeaver.txt", ["/sap/bc/ccms/Specto", "/irj/servlet/"])
+
+    # Scenario 1: GSAP is detected (should NOT match "sap")
+    prober_gsap = FrameworkProber(
+        [_make_tech("gsap")],
+        "https://example.com",
+        seclists_dir=seclists_dir,
+    )
+    probe_list_gsap = prober_gsap._build_probe_list(files_meta, seclists_dir)
+    assert "SAP-NetWeaver.txt" not in probe_list_gsap
+
+    # Scenario 2: SAP Commerce Cloud is detected (should match "sap")
+    prober_sap = FrameworkProber(
+        [_make_tech("SAP Commerce Cloud")],
+        "https://example.com",
+        seclists_dir=seclists_dir,
+    )
+    probe_list_sap = prober_sap._build_probe_list(files_meta, seclists_dir)
+    assert "SAP-NetWeaver.txt" in probe_list_sap
+
+
+# ---------------------------------------------------------------------------
+# Test: Critical paths prioritization in _apply_cap
+# ---------------------------------------------------------------------------
+
+
+def test_critical_paths_priority_ordering() -> None:
+    """Verify that critical/high-value paths are prioritized under the cap."""
+    prober = FrameworkProber([], "https://example.com")
+
+    # Mock paths by source where always_probe files contain critical paths
+    # and a framework-specific file contains framework paths.
+    # We want to make sure the cap (500) prioritized critical always-probes,
+    # then framework paths, then other always-probes.
+    paths_by_source = {
+        "quickhits.txt": ["/some-random-path", "/.ftpquota", "/.env"],
+        "wordpress.txt": ["/wp-content/themes/theme1", "/wp-content/plugins/plugin1"],
+    }
+    files_meta = {
+        "quickhits.txt": {"always_probe": True, "path_count": 3},
+        "wordpress.txt": {"always_probe": False, "path_count": 2},
+    }
+
+    # Under cap limit of 3, we expect critical paths first:
+    # 1. /.ftpquota (critical, always_probe)
+    # 2. /.env (critical, always_probe)
+    # 3. /wp-content/themes/theme1 (framework entry, sorted by count ascending)
+    with patch("stacksniff.collectors.framework_prober._MAX_PROBES", 3):
+        capped = prober._apply_cap(paths_by_source, files_meta)
+        
+        # Verify ordering
+        paths = [path for _, path in capped]
+        assert len(paths) == 3
+        assert "/.ftpquota" in paths
+        assert "/.env" in paths
+        # Either wordpress path could be chosen depending on order, but it must not be the non-critical always-probe path
+        assert "/some-random-path" not in paths
+
 

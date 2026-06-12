@@ -215,3 +215,41 @@ def test_third_party_absolute_url_filtered() -> None:
 
     # Same-origin endpoint must be present
     assert "/api/anchor/list" in urls, f"Expected /api/anchor/list in {urls}"
+
+
+def test_api_detector_framework_redirect_labeling() -> None:
+    """Verify that framework endpoints resolved as redirects are labeled correctly in the pattern matched attribute."""
+    detector = ApiDetector()
+
+    evidence = {
+        "framework_endpoints": [
+            {
+                "url": "https://example.com/irj/servlet",
+                "status_code": 301,
+                "status_label": "redirect",
+                "confidence": 0.7,
+                "source_wordlist": "SAP-NetWeaver.txt",
+            },
+            {
+                "url": "https://example.com/.ftpquota",
+                "status_code": 403,
+                "status_label": "forbidden",
+                "confidence": 0.8,
+                "source_wordlist": "quickhits.txt",
+            }
+        ]
+    }
+
+    endpoints = detector.detect(evidence)
+    assert len(endpoints) == 2
+
+    irj = next((e for e in endpoints if e.url == "/irj/servlet"), None)
+    assert irj is not None
+    assert irj.pattern_matched == "SecLists/SAP-NetWeaver.txt (redirect)"
+    assert irj.confidence == 0.7
+
+    ftpquota = next((e for e in endpoints if e.url == "/.ftpquota"), None)
+    assert ftpquota is not None
+    assert ftpquota.pattern_matched == "SecLists/quickhits.txt (forbidden)"
+    assert ftpquota.confidence == 0.8
+

@@ -303,7 +303,7 @@ class ApiDetector:
             content_type = ep.get("content_type")
 
             pattern_matched = f"SecLists/{source_wl}"
-            if label in ("auth-required", "forbidden"):
+            if label in ("auth-required", "forbidden", "redirect"):
                 pattern_matched += f" ({label})"
 
             endpoint = DetectedEndpoint(

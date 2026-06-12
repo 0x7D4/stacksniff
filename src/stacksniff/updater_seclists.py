@@ -33,15 +33,49 @@ logger = logging.getLogger(__name__)
 
 
 def normalize_filename(filename: str) -> str:
-    """Normalize filename: strip .txt, lowercase, replace hyphens/underscores with space, special case: js -> .js."""
+    """Normalize filename: strip .txt, lowercase, replace hyphens/underscores with space, special case: js -> .js, wp -> wordpress."""
     stem = filename.lower()
     if stem.endswith(".txt"):
         stem = stem[:-4]
+    
+    # Expand wp shorthand to wordpress
+    if stem.startswith("wp-") or stem == "wp":
+        stem = stem.replace("wp-", "wordpress-").replace("wp", "wordpress")
+
     normalized = stem.replace("-", " ").replace("_", " ")
     # Special case: js -> .js
     # Replace " js" with ".js"
     normalized = normalized.replace(" js", ".js")
     return normalized
+
+
+def matches_technology(normalized_filename: str, tech_key: str) -> bool:
+    """Determine if a normalized filename matches a technology key using token-based similarity."""
+    import re
+    
+    # Split both into words
+    file_words = set(re.findall(r'\b\w+\b', normalized_filename.lower()))
+    tech_words = set(re.findall(r'\b\w+\b', tech_key.lower()))
+    
+    # Generic terms commonly used in SecLists filenames that are NOT technology names
+    generic_words = {
+        "api", "endpoints", "seen", "in", "wild", "the", "fuzz", "common", "objects",
+        "actions", "directories", "files", "lowercase", "medium", "small", "large",
+        "big", "raft", "list", "words", "quickhits", "versioning", "metafiles",
+        "backups", "default", "web", "root", "linux", "windows", "unix", "dotfiles",
+        "logins", "passwords", "functions", "scopes", "auth", "oauth", "oidc",
+        "top", "million", "bug", "bounty", "program", "inventory", "trickest",
+        "subdomains", "dns", "top1million", "plugins", "themes"
+    }
+    
+    clean_file_words = file_words - generic_words
+    clean_tech_words = tech_words - generic_words
+    
+    if not clean_file_words or not clean_tech_words:
+        return False
+        
+    # Check if the clean file words are a subset of clean tech words, or vice versa
+    return clean_file_words.issubset(clean_tech_words) or clean_tech_words.issubset(clean_file_words)
 
 
 # ---------------------------------------------------------------------------
@@ -160,11 +194,25 @@ async def fetch_seclists(
             logger.error("Failed to fetch SecLists api subdirectory listing: %s", e)
             items2 = []
 
+        # Fetch CMS/ subdirectory listing
+        try:
+            resp3 = await client.get(
+                "https://api.github.com/repos/danielmiessler/SecLists/contents/Discovery/Web-Content/CMS",
+                headers=headers,
+            )
+            resp3.raise_for_status()
+            items3 = resp3.json()
+        except Exception as e:
+            logger.error("Failed to fetch SecLists CMS subdirectory listing: %s", e)
+            items3 = []
+
     all_items = []
     if isinstance(items1, list):
         all_items.extend(items1)
     if isinstance(items2, list):
         all_items.extend(items2)
+    if isinstance(items3, list):
+        all_items.extend(items3)
 
     unique_files = {}
     for item in all_items:
@@ -181,16 +229,18 @@ async def fetch_seclists(
         "api-seen-in-wild.txt",
         "objects.txt",
         "actions.txt",
+        "quickhits.txt",
+        "versioning_metafiles.txt",
     }
 
     files_to_download = []
     for filename, item in unique_files.items():
         normalized = normalize_filename(filename)
 
-        # Check matches in FingerprintStore (case-insensitive substring match)
+        # Check matches in FingerprintStore using improved matches_technology
         tech_match = []
         for tech_key in store.technologies.keys():
-            if normalized in tech_key:
+            if matches_technology(normalized, tech_key):
                 tech_match.append(tech_key)
 
         tech_match.sort()
@@ -246,7 +296,7 @@ async def fetch_seclists(
         # Check matches in FingerprintStore
         tech_match = []
         for tech_key in store.technologies.keys():
-            if normalized in tech_key:
+            if matches_technology(normalized, tech_key):
                 tech_match.append(tech_key)
 
         tech_match.sort()
