@@ -48,6 +48,10 @@ logger = logging.getLogger(__name__)
 _MAX_PROBES = 500
 _BATCH_SIZE = 50
 
+# Canary path used to detect CMS canonical-redirect baselines.
+# Deliberately nonsensical to guarantee a 404/redirect-to-home on any real site.
+_CANARY_PATH = "/_stacksniff_canary_9f3e7a1b_404_test"
+
 # Status codes we care about, mapped to (label, confidence)
 _STATUS_MAP: dict[int, tuple[str, float]] = {
     200: ("exposed", 0.95),
@@ -56,6 +60,9 @@ _STATUS_MAP: dict[int, tuple[str, float]] = {
     301: ("redirect", 0.70),
     302: ("redirect", 0.70),
 }
+
+# Generic wordlists that have no framework context — stricter filtering applies.
+_GENERIC_WORDLISTS = ("actions.txt", "objects.txt", "api-endpoints.txt")
 
 
 # ---------------------------------------------------------------------------
@@ -172,8 +179,11 @@ class FrameworkProber:
         # Apply 500-path cap with priority ordering
         capped_paths = self._apply_cap(paths_by_source, files_meta)
 
+        # Detect CMS canonical-redirect baseline before probing
+        redirect_baseline = await self._detect_redirect_baseline()
+
         # Fire probes in batches of 50
-        endpoints = await self._probe_all(capped_paths)
+        endpoints = await self._probe_all(capped_paths, redirect_baseline)
 
         result.data["framework_endpoints"] = endpoints
         logger.info(
@@ -301,11 +311,139 @@ class FrameworkProber:
 
         return combined[:_MAX_PROBES]
 
+    # ------------------------------------------------------------------
+    # Canonical-redirect baseline detection
+    # ------------------------------------------------------------------
+
+    async def _detect_redirect_baseline(self) -> str | None:
+        """Send a canary request to detect CMS canonical-redirect targets.
+
+        Many CMS platforms (especially WordPress) redirect *any* unknown path
+        to the homepage or a fuzzy-matched slug via 301/302.  By probing a
+        deliberately nonsensical path first, we learn the server's default
+        redirect target so we can filter it out during real probing.
+
+        Returns
+        -------
+        str | None
+            The normalised redirect-target path (lowercased, trailing-slash
+            stripped) if the canary was redirected, or ``None`` if the server
+            returned a non-redirect status.
+        """
+        canary_url = self._base_url + _CANARY_PATH
+        try:
+            async with httpx.AsyncClient(
+                timeout=self._timeout,
+                follow_redirects=False,
+                headers={"User-Agent": "stacksniff/1.0 (framework-prober)"},
+            ) as client:
+                resp = await client.get(canary_url)
+                if resp.status_code in (301, 302):
+                    location = resp.headers.get("location", "")
+                    if location:
+                        resolved = urljoin(canary_url, location)
+                        baseline = urlparse(resolved).path.rstrip("/").lower() or "/"
+                        logger.info(
+                            "FrameworkProber: canonical-redirect baseline detected → %s",
+                            baseline,
+                        )
+                        return baseline
+        except (httpx.TimeoutException, httpx.RequestError) as exc:
+            logger.debug("Canary request failed: %s", exc)
+        return None
+
+    @staticmethod
+    def _is_canonical_redirect(
+        probed_path: str,
+        redirect_location: str,
+        probe_url: str,
+        baseline: str | None,
+        source_wordlist: str,
+    ) -> bool:
+        """Decide whether a 301/302 redirect is a CMS canonical rewrite.
+
+        A redirect is considered canonical (and therefore a false positive) if:
+
+        1. **Baseline match** — the redirect target matches the canary
+           baseline path (the server sends *every* unknown path here).
+        2. **Fuzzy-slug rewrite** (generic wordlists only) — the probed path
+           is structurally unrelated to the redirect target, indicating the
+           CMS guessed a slug rather than serving a real endpoint.
+
+        Parameters
+        ----------
+        probed_path:
+            The path that was probed (e.g. ``/Com``).
+        redirect_location:
+            The raw ``Location`` header value from the response.
+        probe_url:
+            The full URL that was probed.
+        baseline:
+            The canonical-redirect baseline from :meth:`_detect_redirect_baseline`,
+            or ``None`` if no baseline was detected.
+        source_wordlist:
+            The wordlist filename that sourced this path.
+        """
+        try:
+            resolved = urljoin(probe_url, redirect_location)
+            loc_path = urlparse(resolved).path.rstrip("/").lower() or "/"
+        except Exception:
+            return False
+
+        # Rule 1: redirect lands on the same target as the canary baseline
+        if baseline and loc_path == baseline:
+            logger.debug(
+                "Prober: discarding %s → %s (matches canonical baseline %s)",
+                probed_path, redirect_location, baseline,
+            )
+            return True
+
+        # Rule 2: for generic wordlists, detect fuzzy-slug rewrites.
+        # CMS platforms guess slugs for unknown paths, producing redirects
+        # whose targets are structurally unrelated to the probed path.
+        #
+        # Heuristic (hybrid):
+        #   • Single-segment paths (e.g. /Com): strict path-segment prefix
+        #     check — the redirect target must equal or extend the probed path
+        #     at a segment boundary.
+        #   • Multi-segment paths (e.g. /api/v1): parent-directory check —
+        #     the redirect target must share the same parent segments.  This
+        #     allows legitimate version redirects like /api/v1 → /api/v1.0.
+        if source_wordlist.endswith(_GENERIC_WORDLISTS):
+            probed_norm = probed_path.rstrip("/").lower()
+            if not probed_norm:
+                return False
+
+            probed_segments = probed_norm.strip("/").split("/")
+            loc_segments = loc_path.strip("/").split("/")
+
+            if len(probed_segments) <= 1:
+                # Single-segment: strict path-segment prefix
+                if loc_path != probed_norm and not loc_path.startswith(probed_norm + "/"):
+                    logger.debug(
+                        "Prober: discarding %s → %s (fuzzy-slug rewrite, generic wordlist)",
+                        probed_path, redirect_location,
+                    )
+                    return True
+            else:
+                # Multi-segment: parent directory segments must match
+                probed_parent = probed_segments[:-1]
+                loc_parent = loc_segments[: len(probed_parent)]
+                if probed_parent != loc_parent:
+                    logger.debug(
+                        "Prober: discarding %s → %s (fuzzy-slug rewrite, generic wordlist)",
+                        probed_path, redirect_location,
+                    )
+                    return True
+
+        return False
+
     async def _probe_one(
         self,
         client: httpx.AsyncClient,
         source_wordlist: str,
         path: str,
+        redirect_baseline: str | None = None,
     ) -> dict[str, Any] | None:
         """Probe a single path and return an endpoint dict or ``None``."""
         url = self._base_url + path
@@ -350,7 +488,6 @@ class FrameworkProber:
             if status == 200:
                 # Generic wordlists (no framework context): only accept
                 # structured data content-types — HTML is always noise here.
-                _GENERIC_WORDLISTS = ("actions.txt", "objects.txt", "api-endpoints.txt")
                 _ACCEPTED_TYPES = (
                     "application/json",
                     "application/yaml",
@@ -387,13 +524,20 @@ class FrameworkProber:
                             return None
 
             # Redirect-noise filter (Fix 2b): discard 3xx responses that are
-            # CMS-style rewrites rather than real API redirects.  Patterns that
-            # indicate "you were routed to a login/settings page":
-            #   • Location path ends with /login, /settings, /session, /signin, /auth
+            # CMS-style rewrites rather than real API redirects.  Patterns:
+            #   • Canonical-redirect baseline match (canary detection)
+            #   • Fuzzy-slug rewrite (generic wordlists)
+            #   • Location path ends with /login, /settings, /session, etc.
             #   • Location redirects to a completely different apex domain
             if status in (301, 302):
                 location = response.headers.get("location", "") or ""
                 if location:
+                    # --- Canonical-redirect filter (WordPress et al.) ---
+                    if self._is_canonical_redirect(
+                        path, location, url, redirect_baseline, source_wordlist,
+                    ):
+                        return None
+
                     try:
                         loc_parsed = urlparse(location)
                         loc_path = loc_parsed.path.rstrip("/").lower()
@@ -466,6 +610,7 @@ class FrameworkProber:
     async def _probe_all(
         self,
         capped_paths: list[tuple[str, str]],
+        redirect_baseline: str | None = None,
     ) -> list[dict[str, Any]]:
         """Fire all probes in batches of :data:`_BATCH_SIZE` using a shared client."""
         endpoints: list[dict[str, Any]] = []
@@ -477,7 +622,10 @@ class FrameworkProber:
         ) as client:
             for batch_start in range(0, len(capped_paths), _BATCH_SIZE):
                 batch = capped_paths[batch_start : batch_start + _BATCH_SIZE]
-                tasks = [self._probe_one(client, src, path) for src, path in batch]
+                tasks = [
+                    self._probe_one(client, src, path, redirect_baseline)
+                    for src, path in batch
+                ]
                 batch_results = await asyncio.gather(*tasks, return_exceptions=True)
 
                 for item in batch_results:

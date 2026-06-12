@@ -18,6 +18,8 @@ from stacksniff.collectors.framework_prober import (
     FrameworkProber,
     _MAX_PROBES,
     _BATCH_SIZE,
+    _CANARY_PATH,
+    _GENERIC_WORDLISTS,
 )
 from stacksniff.models import Evidence, TechMatch
 
@@ -271,6 +273,8 @@ async def test_probe_limit_500(tmp_path: Path) -> None:
     probed_urls: list[str] = []
 
     async def mock_get(url: str, **kwargs: Any) -> httpx.Response:
+        if _CANARY_PATH in url:
+            return _make_response(404)
         probed_urls.append(str(url))
         return _make_response(404)
 
@@ -463,6 +467,8 @@ async def test_confidence_mapping_redirect(tmp_path: Path) -> None:
     _write_wordlist(seclists_dir, "django.txt", ["/admin/"])
 
     async def mock_get(url: str, **kwargs: Any) -> httpx.Response:
+        if _CANARY_PATH in url:
+            return _make_response(404)
         return _make_response(301)
 
     with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock:
@@ -502,6 +508,8 @@ async def test_other_status_codes_skipped(tmp_path: Path) -> None:
 
     async def mock_get(url: str, **kwargs: Any) -> httpx.Response:
         nonlocal call_count
+        if _CANARY_PATH in url:
+            return _make_response(404)
         call_count += 1
         if "missing" in url:
             return _make_response(404)
@@ -690,6 +698,8 @@ async def test_redirect_same_domain_non_nav_kept(tmp_path: Path) -> None:
     _write_wordlist(seclists_dir, "api-endpoints.txt", ["/api/v1"])
 
     async def mock_get(url: str, **kwargs: Any) -> httpx.Response:
+        if _CANARY_PATH in url:
+            return httpx.Response(404, request=httpx.Request("GET", url))
         # A versioned redirect: /api/v1 → /api/v1.0  (same domain, non-nav)
         return httpx.Response(
             301,
@@ -891,3 +901,312 @@ async def test_trailing_slash_redirect_to_valid_json_kept(tmp_path: Path) -> Non
     assert len(endpoints) == 1
     assert endpoints[0]["status_code"] == 200
     assert endpoints[0]["top_level_keys"] == ["status"]
+
+
+# ---------------------------------------------------------------------------
+# Test: WordPress canonical-redirect baseline — canary detects redirect target
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_wordpress_canonical_redirect_baseline(tmp_path: Path) -> None:
+    """WordPress redirects nonsense paths to the homepage.  The canary detects
+    this and subsequent probes that redirect to the same target are discarded.
+
+    Scenario (iifon.org-style):
+      - Canary → 302 → /
+      - /Com    → 302 → /community/  (fuzzy slug — different from baseline, but
+                                       still a fuzzy rewrite for generic lists)
+      - /admin  → 302 → /            (matches baseline)
+      - /robots.txt → 200 text/plain (legitimate — kept)
+    """
+    seclists_dir = tmp_path / "seclists"
+    seclists_dir.mkdir()
+
+    files_meta = {
+        "actions.txt": {
+            "tech_match": [],
+            "path_count": 3,
+            "always_probe": True,
+        }
+    }
+    _write_manifest(seclists_dir, files_meta)
+    _write_wordlist(
+        seclists_dir,
+        "actions.txt",
+        ["/Com", "/admin", "/robots.txt"],
+    )
+
+    async def mock_get(url: str, **kwargs: Any) -> httpx.Response:
+        if _CANARY_PATH in url:
+            # WordPress redirects unknown → homepage
+            return httpx.Response(
+                302,
+                headers={"location": "/", "content-type": "text/html"},
+                text="",
+                request=httpx.Request("GET", url),
+            )
+        if "/Com" in url:
+            # Fuzzy slug rewrite: /Com → /community/
+            return httpx.Response(
+                302,
+                headers={"location": "/community/", "content-type": "text/html"},
+                text="",
+                request=httpx.Request("GET", url),
+            )
+        if "/admin" in url:
+            # Canonical redirect to homepage (matches baseline)
+            return httpx.Response(
+                302,
+                headers={"location": "/", "content-type": "text/html"},
+                text="",
+                request=httpx.Request("GET", url),
+            )
+        if "/robots.txt" in url:
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/plain"},
+                text="User-agent: *\nDisallow:",
+                request=httpx.Request("GET", url),
+            )
+        return httpx.Response(404, request=httpx.Request("GET", url))
+
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock:
+        mock.side_effect = mock_get
+        prober = FrameworkProber(
+            [],
+            "https://example.com",
+            seclists_dir=seclists_dir,
+        )
+        result = await prober.collect()
+
+    endpoints = result.data["framework_endpoints"]
+    urls = [ep["url"] for ep in endpoints]
+    # /Com and /admin should be filtered out; /robots.txt should be kept
+    assert not any("/Com" in u for u in urls), f"Fuzzy slug rewrite leaked: {urls}"
+    assert not any("/admin" in u for u in urls), f"Baseline redirect leaked: {urls}"
+    assert any("/robots.txt" in u for u in urls), f"Legitimate endpoint missing: {urls}"
+
+
+# ---------------------------------------------------------------------------
+# Test: Fuzzy-slug rewrite on generic wordlists discarded
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fuzzy_slug_rewrite_generic_wordlist_discarded(tmp_path: Path) -> None:
+    """For generic wordlists (api-endpoints.txt), a 301 redirect where the
+    probed path is structurally unrelated to the target is discarded.
+
+    /v1/data → /video-data/ is a CMS fuzzy-slug guess, not a real endpoint.
+    """
+    seclists_dir = tmp_path / "seclists"
+    seclists_dir.mkdir()
+
+    files_meta = {
+        "api-endpoints.txt": {
+            "tech_match": [],
+            "path_count": 2,
+            "always_probe": True,
+        }
+    }
+    _write_manifest(seclists_dir, files_meta)
+    _write_wordlist(seclists_dir, "api-endpoints.txt", ["/v1/data", "/api/auth"])
+
+    async def mock_get(url: str, **kwargs: Any) -> httpx.Response:
+        if _CANARY_PATH in url:
+            # Server returns 404 for canary (no baseline redirect)
+            return httpx.Response(404, request=httpx.Request("GET", url))
+        if "/v1/data" in url:
+            # WordPress fuzzy slug: /v1/data → /video-data/
+            return httpx.Response(
+                301,
+                headers={"location": "/video-data/", "content-type": "text/html"},
+                text="",
+                request=httpx.Request("GET", url),
+            )
+        if "/api/auth" in url:
+            # WordPress fuzzy slug: /api/auth → /about-us/
+            return httpx.Response(
+                301,
+                headers={"location": "/about-us/", "content-type": "text/html"},
+                text="",
+                request=httpx.Request("GET", url),
+            )
+        return httpx.Response(404, request=httpx.Request("GET", url))
+
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock:
+        mock.side_effect = mock_get
+        prober = FrameworkProber(
+            [],
+            "https://example.com",
+            seclists_dir=seclists_dir,
+        )
+        result = await prober.collect()
+
+    endpoints = result.data["framework_endpoints"]
+    # Both fuzzy-slug redirects should be discarded
+    assert len(endpoints) == 0, f"Fuzzy slug redirects leaked: {endpoints}"
+
+
+# ---------------------------------------------------------------------------
+# Test: Framework-specific wordlist redirect NOT filtered by fuzzy-slug rule
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_framework_wordlist_redirect_not_filtered_by_fuzzy_slug(tmp_path: Path) -> None:
+    """Framework-specific wordlists (e.g. django.txt) are NOT subject to the
+    fuzzy-slug filter — only the baseline filter and nav-redirect filter apply.
+
+    /admin/ → /dashboard/ is a legitimate redirect for framework-specific probes.
+    """
+    seclists_dir = tmp_path / "seclists"
+    seclists_dir.mkdir()
+
+    files_meta = {
+        "django.txt": {
+            "tech_match": ["django"],
+            "path_count": 1,
+            "always_probe": False,
+        }
+    }
+    _write_manifest(seclists_dir, files_meta)
+    _write_wordlist(seclists_dir, "django.txt", ["/admin/"])
+
+    async def mock_get(url: str, **kwargs: Any) -> httpx.Response:
+        if _CANARY_PATH in url:
+            return httpx.Response(404, request=httpx.Request("GET", url))
+        if "/admin/" in url:
+            # Redirect to /dashboard/ — different path, but framework-specific
+            return httpx.Response(
+                301,
+                headers={"location": "/dashboard/", "content-type": "text/html"},
+                text="",
+                request=httpx.Request("GET", url),
+            )
+        return httpx.Response(404, request=httpx.Request("GET", url))
+
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock:
+        mock.side_effect = mock_get
+        prober = FrameworkProber(
+            [_make_tech("Django")],
+            "https://example.com",
+            seclists_dir=seclists_dir,
+        )
+        result = await prober.collect()
+
+    endpoints = result.data["framework_endpoints"]
+    # Framework-specific redirect should NOT be filtered by fuzzy-slug rule
+    assert len(endpoints) == 1
+    assert endpoints[0]["status_code"] == 301
+    assert endpoints[0]["redirect_location"] == "/dashboard/"
+
+
+# ---------------------------------------------------------------------------
+# Test: _is_canonical_redirect unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestIsCanonicalRedirect:
+    """Unit tests for the static _is_canonical_redirect method."""
+
+    def test_baseline_match(self) -> None:
+        """Redirect matching the baseline path should be flagged canonical."""
+        assert FrameworkProber._is_canonical_redirect(
+            probed_path="/Com",
+            redirect_location="/",
+            probe_url="https://example.com/Com",
+            baseline="/",
+            source_wordlist="actions.txt",
+        )
+
+    def test_no_baseline_no_match(self) -> None:
+        """Without a baseline, the baseline rule does not fire."""
+        assert not FrameworkProber._is_canonical_redirect(
+            probed_path="/admin",
+            redirect_location="/admin/",
+            probe_url="https://example.com/admin",
+            baseline=None,
+            source_wordlist="django.txt",
+        )
+
+    def test_fuzzy_slug_generic_wordlist(self) -> None:
+        """Generic wordlist with unrelated redirect path → canonical."""
+        assert FrameworkProber._is_canonical_redirect(
+            probed_path="/v1/data",
+            redirect_location="/video-data/",
+            probe_url="https://example.com/v1/data",
+            baseline=None,
+            source_wordlist="api-endpoints.txt",
+        )
+
+    def test_prefix_match_generic_wordlist_kept(self) -> None:
+        """Generic wordlist where redirect IS a prefix match → NOT canonical."""
+        assert not FrameworkProber._is_canonical_redirect(
+            probed_path="/api/v1",
+            redirect_location="/api/v1/",
+            probe_url="https://example.com/api/v1",
+            baseline=None,
+            source_wordlist="api-endpoints.txt",
+        )
+
+    def test_fuzzy_slug_framework_wordlist_not_flagged(self) -> None:
+        """Framework-specific wordlists skip the fuzzy-slug check."""
+        assert not FrameworkProber._is_canonical_redirect(
+            probed_path="/admin",
+            redirect_location="/dashboard/",
+            probe_url="https://example.com/admin",
+            baseline=None,
+            source_wordlist="django.txt",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test: Canary timeout does not break probing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_canary_timeout_does_not_break_probing(tmp_path: Path) -> None:
+    """If the canary request times out, probing should still proceed normally."""
+    seclists_dir = tmp_path / "seclists"
+    seclists_dir.mkdir()
+
+    files_meta = {
+        "actions.txt": {
+            "tech_match": [],
+            "path_count": 1,
+            "always_probe": True,
+        }
+    }
+    _write_manifest(seclists_dir, files_meta)
+    _write_wordlist(seclists_dir, "actions.txt", ["/robots.txt"])
+
+    call_count = 0
+
+    async def mock_get(url: str, **kwargs: Any) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        if _CANARY_PATH in url:
+            raise httpx.TimeoutException("canary timed out")
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/plain"},
+            text="User-agent: *",
+            request=httpx.Request("GET", url),
+        )
+
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock:
+        mock.side_effect = mock_get
+        prober = FrameworkProber(
+            [],
+            "https://example.com",
+            seclists_dir=seclists_dir,
+        )
+        result = await prober.collect()
+
+    endpoints = result.data["framework_endpoints"]
+    assert len(endpoints) == 1
+    assert endpoints[0]["url"] == "https://example.com/robots.txt"
+
