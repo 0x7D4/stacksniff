@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path  # noqa: TC003
@@ -33,11 +34,15 @@ logger = logging.getLogger(__name__)
 
 
 def normalize_filename(filename: str) -> str:
-    """Normalize filename: strip .txt, lowercase, replace hyphens/underscores with space, special case: js -> .js, wp -> wordpress."""
+    """Normalize a SecLists filename to a technology name.
+
+    Strips ``.txt``, lowercases, replaces hyphens/underscores with spaces.
+    Special cases: ``wp-`` prefix → ``wordpress-``, ``wp`` → ``wordpress``.
+    """
     stem = filename.lower()
     if stem.endswith(".txt"):
         stem = stem[:-4]
-    
+
     # Expand wp shorthand to wordpress
     if stem.startswith("wp-") or stem == "wp":
         stem = stem.replace("wp-", "wordpress-").replace("wp", "wordpress")
@@ -51,12 +56,11 @@ def normalize_filename(filename: str) -> str:
 
 def matches_technology(normalized_filename: str, tech_key: str) -> bool:
     """Determine if a normalized filename matches a technology key using token-based similarity."""
-    import re
-    
+
     # Split both into words
     file_words = set(re.findall(r'\b\w+\b', normalized_filename.lower()))
     tech_words = set(re.findall(r'\b\w+\b', tech_key.lower()))
-    
+
     # Generic terms commonly used in SecLists filenames that are NOT technology names
     generic_words = {
         "api", "endpoints", "seen", "in", "wild", "the", "fuzz", "common", "objects",
@@ -67,15 +71,18 @@ def matches_technology(normalized_filename: str, tech_key: str) -> bool:
         "top", "million", "bug", "bounty", "program", "inventory", "trickest",
         "subdomains", "dns", "top1million", "plugins", "themes"
     }
-    
+
     clean_file_words = file_words - generic_words
     clean_tech_words = tech_words - generic_words
-    
+
     if not clean_file_words or not clean_tech_words:
         return False
-        
+
     # Check if the clean file words are a subset of clean tech words, or vice versa
-    return clean_file_words.issubset(clean_tech_words) or clean_tech_words.issubset(clean_file_words)
+    return (
+        clean_file_words.issubset(clean_tech_words)
+        or clean_tech_words.issubset(clean_file_words)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -239,16 +246,13 @@ async def fetch_seclists(
 
         # Check matches in FingerprintStore using improved matches_technology
         tech_match = []
-        for tech_key in store.technologies.keys():
+        for tech_key in store.technologies:
             if matches_technology(normalized, tech_key):
                 tech_match.append(tech_key)
 
         tech_match.sort()
 
-        if tech_match:
-            always_probe = False
-        else:
-            always_probe = filename in always_probe_names
+        always_probe = False if tech_match else filename in always_probe_names
 
         if tech_match or always_probe:
             files_to_download.append({
@@ -260,7 +264,7 @@ async def fetch_seclists(
 
     async def _fetch_one_file(
         client: httpx.AsyncClient,
-        file_info: dict,
+        file_info: dict[str, Any],
     ) -> tuple[str, list[str]]:
         url = file_info["download_url"]
         name = file_info["name"]
@@ -290,21 +294,18 @@ async def fetch_seclists(
 
     download_results_map = dict(download_results)
 
-    for filename, item in unique_files.items():
+    for filename, _item in unique_files.items():
         normalized = normalize_filename(filename)
 
         # Check matches in FingerprintStore
         tech_match = []
-        for tech_key in store.technologies.keys():
+        for tech_key in store.technologies:
             if matches_technology(normalized, tech_key):
                 tech_match.append(tech_key)
 
         tech_match.sort()
 
-        if tech_match:
-            always_probe = False
-        else:
-            always_probe = filename in always_probe_names
+        always_probe = False if tech_match else filename in always_probe_names
 
         path_count = 0
         if filename in download_results_map:

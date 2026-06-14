@@ -1,0 +1,56 @@
+[project]
+name = "stacksniff-api"
+version = "0.1.0"
+description = "Django REST API wrapping the stacksniff scanner"
+requires-python = ">=3.11"
+dependencies = [
+    "django>=5.0.0",
+    "djangorestframework>=3.15.0",
+    "django-environ>=0.11.0",
+    "django-cors-headers>=4.3.0",
+    "celery[redis]>=5.3.0",
+    "redis>=5.0.0",
+    "stacksniff @ file:///C:/IIFON/stacksniff",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-django>=4.8.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.2.0",
+    "mypy>=1.8.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+"scanner/migrations/*" = ["E501"]
+"config/settings/*" = ["F403", "F405"]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings.dev"
+python_files = ["test_*.py", "*_test.py"]
+testpaths = ["scanner/tests"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+check_untyped_defs = true
+disallow_untyped_defs = false
+
+[tool.setuptools]
+py-modules = []
+
+[tool.uv]
+package = false
+
+
+
+
+

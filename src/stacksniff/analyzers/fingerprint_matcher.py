@@ -49,9 +49,10 @@ def _match_network_request_to_selector(url: str, sel: str) -> dict[str, Any] | N
     if attr not in ("href", "src", "data-href"):
         return None
 
-    matched = False
     if op == "=":
-        matched = (url == val or (not val.startswith(("http:", "https:", "//")) and url.endswith(val)))
+        matched = url == val or (
+            not val.startswith(("http:", "https:", "//")) and url.endswith(val)
+        )
     elif op == "*=":
         matched = (val in url)
     elif op == "^=":
@@ -372,7 +373,8 @@ class FingerprintMatcher:
                     for sel, sub_rule in fp.dom.items():
                         if sel in dom_data:
                             elements = dom_data[sel]
-                            if not sub_rule or "exists" in sub_rule:
+                            rule_dict = sub_rule if isinstance(sub_rule, dict) else {}
+                            if not sub_rule or "exists" in rule_dict:
                                 matched_sources.add("dom")
                                 matched_text = f"Element exists: {sel}"
                                 evidences.append(
@@ -390,75 +392,92 @@ class FingerprintMatcher:
                                 matched_el_criteria = True
 
                                 # Check text regex
-                                if "text" in sub_rule:
-                                    pat = sub_rule["text"]
-                                    try:
-                                        rx = re.compile(pat, re.IGNORECASE)
-                                        match = rx.search(el.get("text", ""))
-                                        if not match:
+                                if "text" in rule_dict:
+                                    pat = rule_dict["text"]
+                                    if isinstance(pat, str):
+                                        try:
+                                            rx = re.compile(pat, re.IGNORECASE)
+                                            match = rx.search(el.get("text", ""))
+                                            if not match:
+                                                matched_el_criteria = False
+                                            else:
+                                                if rx.groups > 0 and len(match.groups()) >= 1:
+                                                    v = match.group(1)
+                                                    if v:
+                                                        versions.append(v)
+                                        except re.error:
                                             matched_el_criteria = False
-                                        else:
-                                            if rx.groups > 0 and len(match.groups()) >= 1:
-                                                v = match.group(1)
-                                                if v:
-                                                    versions.append(v)
-                                    except re.error:
-                                        matched_el_criteria = False
 
                                 # Check attributes
-                                if matched_el_criteria and "attributes" in sub_rule:
+                                if matched_el_criteria and "attributes" in rule_dict:
                                     el_attrs = el.get("attributes", {})
-                                    for attr_name, pat in sub_rule["attributes"].items():
-                                        attr_val = el_attrs.get(attr_name)
-                                        if attr_val is None:
-                                            matched_el_criteria = False
-                                            break
-                                        try:
-                                            rx = re.compile(pat, re.IGNORECASE)
-                                            match = rx.search(attr_val)
-                                            if not match:
+                                    attrs_rule = rule_dict["attributes"]
+                                    if isinstance(attrs_rule, dict):
+                                        for attr_name, pat in attrs_rule.items():
+                                            attr_val = el_attrs.get(attr_name)
+                                            if attr_val is None:
                                                 matched_el_criteria = False
                                                 break
-                                            else:
-                                                if rx.groups > 0 and len(match.groups()) >= 1:
-                                                    v = match.group(1)
-                                                    if v:
-                                                        versions.append(v)
-                                        except re.error:
-                                            matched_el_criteria = False
-                                            break
+                                            if isinstance(pat, str):
+                                                try:
+                                                    rx = re.compile(pat, re.IGNORECASE)
+                                                    match = rx.search(attr_val)
+                                                    if not match:
+                                                        matched_el_criteria = False
+                                                        break
+                                                    else:
+                                                        has_grps = rx.groups > 0
+                                                        if has_grps and len(match.groups()) >= 1:
+                                                            v = match.group(1)
+                                                            if v:
+                                                                versions.append(v)
+                                                except re.error:
+                                                    matched_el_criteria = False
+                                                    break
 
                                 # Check properties
-                                if matched_el_criteria and "properties" in sub_rule:
+                                if matched_el_criteria and "properties" in rule_dict:
                                     el_props = el.get("properties", {})
-                                    for prop_name, pat in sub_rule["properties"].items():
-                                        prop_val = el_props.get(prop_name)
-                                        if prop_val is None:
-                                            matched_el_criteria = False
-                                            break
-                                        try:
-                                            rx = re.compile(pat, re.IGNORECASE)
-                                            match = rx.search(prop_val)
-                                            if not match:
+                                    props_rule = rule_dict["properties"]
+                                    if isinstance(props_rule, dict):
+                                        for prop_name, pat in props_rule.items():
+                                            prop_val = el_props.get(prop_name)
+                                            if prop_val is None:
                                                 matched_el_criteria = False
                                                 break
-                                            else:
-                                                if rx.groups > 0 and len(match.groups()) >= 1:
-                                                    v = match.group(1)
-                                                    if v:
-                                                        versions.append(v)
-                                        except re.error:
-                                            matched_el_criteria = False
-                                            break
+                                            if isinstance(pat, str):
+                                                try:
+                                                    rx = re.compile(pat, re.IGNORECASE)
+                                                    match = rx.search(prop_val)
+                                                    if not match:
+                                                        matched_el_criteria = False
+                                                        break
+                                                    else:
+                                                        has_grps = rx.groups > 0
+                                                        if has_grps and len(match.groups()) >= 1:
+                                                            v = match.group(1)
+                                                            if v:
+                                                                versions.append(v)
+                                                except re.error:
+                                                    matched_el_criteria = False
+                                                    break
 
                                 if matched_el_criteria:
                                     matched_any_el = True
                                     matched_details = []
-                                    if "text" in sub_rule:
+                                    if "text" in rule_dict:
                                         matched_details.append(f"text: {el.get('text')}")
-                                    if "attributes" in sub_rule:
+                                    if "attributes" in rule_dict:
+                                        attrs_rule = rule_dict["attributes"]
+                                        attrs_dict = {}
+                                        if isinstance(attrs_rule, dict):
+                                            attrs_dict = {
+                                                k: el.get("attributes", {}).get(k)
+                                                for k in attrs_rule
+                                            }
                                         matched_details.append(
-                                            f"attributes: { {k: el.get('attributes', {}).get(k) for k in sub_rule['attributes']} }"
+                                            "attributes: "
+                                            + str(attrs_dict)
                                         )
                                     matched_str = (
                                         f"Found: {sel} ({', '.join(matched_details)})"

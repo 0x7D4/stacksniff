@@ -31,14 +31,17 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urljoin, urlparse
 
 import httpx
 import yaml
 
 from stacksniff.collectors.base import CollectorResult
-from stacksniff.models import TechMatch
+from stacksniff.utils import get_apex_domain
+
+if TYPE_CHECKING:
+    from stacksniff.models import TechMatch
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +114,28 @@ _CRITICAL_PATHS = {
     "/graphql",
 }
 
+# Content types we accept for 200 OK responses from generic wordlists.
+_ACCEPTED_TYPES: tuple[str, ...] = (
+    "application/json",
+    "application/yaml",
+    "application/xml",
+    "application/vnd.",
+    "text/plain",
+    "text/yaml",
+    "text/xml",
+    "text/csv",
+)
+
+# Navigation redirect suffixes we consider CMS login-redirects (noise).
+_NAV_SUFFIXES: tuple[str, ...] = (
+    "/login",
+    "/settings",
+    "/session",
+    "/signin",
+    "/auth",
+    "/logon",
+)
+
 
 def _is_high_value_path(path: str) -> bool:
     """Return True if the path targets a critical security or configuration file."""
@@ -179,7 +204,8 @@ class FrameworkProber:
     # ------------------------------------------------------------------
 
     async def collect(self) -> CollectorResult:
-        """Run the framework probe and return a :class:`~stacksniff.collectors.base.CollectorResult`.
+        """Run the framework probe and return a
+        :class:`~stacksniff.collectors.base.CollectorResult`.
 
         Returns
         -------
@@ -555,14 +581,21 @@ class FrameworkProber:
                         loc_path = loc_parsed.path.rstrip("/").lower()
 
                         # If same host and same path (modulo trailing slash), follow one hop
-                        if (loc_parsed.netloc == orig_parsed.netloc or not loc_parsed.netloc) and loc_path == orig_path:
+                        same_host = (
+                            loc_parsed.netloc == orig_parsed.netloc
+                            or not loc_parsed.netloc
+                        )
+                        if same_host and loc_path == orig_path:
                             resolved_url = urljoin(url, location)
                             next_resp = await client.get(resolved_url, follow_redirects=False)
                             status = next_resp.status_code
                             response = next_resp
                             ct = response.headers.get("content-type", "") or ""
                             ct_lower = ct.lower().strip()
-                            logger.debug("probe trailing-slash resolved %s status=%d ct=%s", resolved_url, status, ct)
+                            logger.debug(
+                                "probe trailing-slash resolved %s status=%d ct=%s",
+                                resolved_url, status, ct,
+                            )
 
                             if status not in _STATUS_MAP:
                                 return None
@@ -572,20 +605,13 @@ class FrameworkProber:
             if status == 200:
                 # Generic wordlists (no framework context): only accept
                 # structured data content-types — HTML is always noise here.
-                _ACCEPTED_TYPES = (
-                    "application/json",
-                    "application/yaml",
-                    "application/xml",
-                    "application/vnd.",
-                    "text/plain",
-                    "text/yaml",
-                    "text/xml",
-                    "text/csv",
-                )
                 if source_wordlist.endswith(_GENERIC_WORDLISTS):
                     if not any(ct_lower.startswith(t) for t in _ACCEPTED_TYPES):
                         return None
-                elif ct_lower.startswith("text/html") or (not ct_lower and "html" in response.text[:200].lower()):
+                elif (
+                    ct_lower.startswith("text/html")
+                    or (not ct_lower and "html" in response.text[:200].lower())
+                ):
                     # For all other wordlists: HTML responses are soft-404s unless:
                     #   (a) the body parses as JSON (Content-Type lie), or
                     #   (b) the response is ≤10KB AND the path has a file extension
@@ -596,7 +622,8 @@ class FrameworkProber:
                     except (json.JSONDecodeError, ValueError, Exception):
                         # Not JSON — apply size + extension heuristics
                         path_no_qs = urlparse(url).path
-                        path_has_ext = "." in path_no_qs.split("/")[-1] if "/" in path_no_qs else "." in path_no_qs
+                        last_seg = path_no_qs.split("/")[-1] if "/" in path_no_qs else path_no_qs
+                        path_has_ext = "." in last_seg
                         body_large = len(body_text) > 10_240  # 10 KB
                         if body_large or not path_has_ext:
                             logger.debug(
@@ -625,10 +652,6 @@ class FrameworkProber:
                     try:
                         loc_parsed = urlparse(location)
                         loc_path = loc_parsed.path.rstrip("/").lower()
-                        _NAV_SUFFIXES = (
-                            "/login", "/settings", "/session",
-                            "/signin", "/auth", "/logon",
-                        )
                         if any(loc_path.endswith(s) for s in _NAV_SUFFIXES):
                             logger.debug(
                                 "Prober: discarding %s \u2192 %s (nav redirect)",
@@ -640,12 +663,9 @@ class FrameworkProber:
                         # Discard if redirect exits the target's apex domain
                         base_parsed = urlparse(self._base_url)
 
-                        def _apex(host: str) -> str:
-                            parts = host.lower().split(".")
-                            return ".".join(parts[-2:]) if len(parts) >= 2 else host
-
                         loc_host = loc_parsed.netloc.split(":")[0]
-                        if loc_host and _apex(loc_host) != _apex(base_parsed.netloc.split(":")[0]):
+                        base_host = base_parsed.netloc.split(":")[0]
+                        if loc_host and get_apex_domain(loc_host) != get_apex_domain(base_host):
                             logger.debug(
                                 "Prober: discarding %s \u2192 %s (cross-domain redirect)",
                                 url,
@@ -658,7 +678,9 @@ class FrameworkProber:
             label, confidence = _STATUS_MAP[status]
 
             top_level_keys: list[str] | None = None
-            if "application/json" in ct_lower or (status == 200 and ct_lower.startswith("text/html")):
+            is_json_ct = "application/json" in ct_lower
+            is_html_200 = status == 200 and ct_lower.startswith("text/html")
+            if is_json_ct or is_html_200:
                 try:
                     body = response.json()
                     if isinstance(body, dict):
@@ -715,7 +737,7 @@ class FrameworkProber:
                 for item in batch_results:
                     if isinstance(item, Exception):
                         logger.debug("Probe raised exception: %s", item)
-                    elif item is not None:
+                    elif isinstance(item, dict):
                         endpoints.append(item)
 
         return endpoints

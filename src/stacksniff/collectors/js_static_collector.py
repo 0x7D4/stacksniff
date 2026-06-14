@@ -16,6 +16,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 
 from stacksniff.collectors.base import CollectorResult
+from stacksniff.utils import is_first_party
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +136,7 @@ class JsStaticCollector:
                 except Exception:
                     continue  # malformed — discard
 
-                if target_netloc and not _is_first_party(ep_netloc, target_netloc):
+                if target_netloc and not is_first_party(ep_netloc, target_netloc):
                     # Different domain — discard (Fix 2)
                     logger.debug(
                         "JsStaticCollector: discarding cross-domain endpoint %s", ep
@@ -232,27 +233,4 @@ class JsStaticCollector:
                     logger.debug("Failed to parse source map JSON: %s", json_exc)
 
 
-# ------------------------------------------------------------------
-# Helpers
-# ------------------------------------------------------------------
 
-
-def _get_apex_domain(host: str) -> str:
-    host = host.lower().split(":")[0]
-    parts = host.split(".")
-    if len(parts) == 4 and all(p.isdigit() for p in parts):
-        return host
-    if len(parts) >= 3:
-        second_last = parts[-2]
-        last = parts[-1]
-        if len(second_last) <= 3 and len(last) == 2:
-            return ".".join(parts[-3:])
-    return ".".join(parts[-2:]) if len(parts) >= 2 else host
-
-
-def _is_first_party(host1: str, host2: str) -> bool:
-    h1 = host1.lower().split(":")[0].removeprefix("www.")
-    h2 = host2.lower().split(":")[0].removeprefix("www.")
-    if h1 == h2:
-        return True
-    return _get_apex_domain(h1) == _get_apex_domain(h2)

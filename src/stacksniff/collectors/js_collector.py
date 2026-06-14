@@ -154,7 +154,7 @@ class JsCollector:
 
         # ---- guard: Playwright optional dependency --------------------
         try:
-            from playwright.async_api import async_playwright
+            from playwright.async_api import async_playwright  # noqa: F401
         except ImportError:
             result.add_error(
                 "Playwright is not installed. Install with: "
@@ -171,7 +171,7 @@ class JsCollector:
             from stacksniff.fingerprints import FingerprintStore
             store = FingerprintStore.default()
             for fp in store.get_all():
-                for gk in fp.js_globals.keys():
+                for gk in fp.js_globals:
                     # Deduplicate and add
                     if gk not in expressions:
                         expressions.append(gk)
@@ -187,8 +187,9 @@ class JsCollector:
         timeout_ms = int(self._timeout * 1_000)
 
         try:
-            async with async_playwright() as pw:
-                browser = await pw.chromium.launch(headless=True)
+            from stacksniff.browser_pool import get_pool
+            pool = get_pool()
+            async with pool.acquire() as browser:
                 try:
                     context = await browser.new_context(
                         java_script_enabled=True,
@@ -220,7 +221,10 @@ class JsCollector:
                         store = FingerprintStore.default()
                         dom_selectors = list(store.get_all_dom_selectors())
                     except Exception as e:
-                        logger.warning("Could not load dynamic dom selectors from FingerprintStore: %s", e)
+                        logger.warning(
+                            "Could not load dynamic dom selectors from FingerprintStore: %s",
+                            e,
+                        )
                         dom_selectors = []
 
                     if dom_selectors:

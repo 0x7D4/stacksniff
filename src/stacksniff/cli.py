@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import asyncio
-import io
+import contextlib
 import sys
 from pathlib import Path  # noqa: TC003
 from typing import Any
@@ -25,10 +25,8 @@ app = typer.Typer(help="stacksniff -- detect web technology stacks and APIs")
 # Reconfigure stdout to UTF-8 on Windows to avoid UnicodeEncodeError from
 # Rich block/arrow characters in the legacy Windows console.
 if hasattr(sys.stdout, "reconfigure"):
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
-    except Exception:  # noqa: BLE001
-        pass
+    with contextlib.suppress(Exception):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 console = Console(legacy_windows=False)
 
@@ -104,11 +102,21 @@ def scan(
         "-v",
         help="Print detailed evidence for matched technologies",
     ),
+    cache: bool = typer.Option(
+        True,
+        "--cache/--no-cache",
+        help="Use/enable scan results caching",
+    ),
+    cache_ttl: int = typer.Option(
+        1800,
+        "--cache-ttl",
+        help="Cache time-to-live (TTL) in seconds",
+    ),
 ) -> None:
     """Scan a target URL and detect its stack + API endpoints."""
 
     async def run_scan() -> Any:
-        scanner = Scanner()
+        scanner = Scanner(cache_ttl=cache_ttl)
 
         with Progress(
             SpinnerColumn(),
@@ -167,6 +175,7 @@ def scan(
                 timeout=timeout,
                 fingerprints_path=fingerprints,
                 progress_callback=progress_callback,
+                cache_bypass=not cache,
             )
 
     if not json_output:
@@ -451,6 +460,64 @@ def update_fingerprints(
         console.print(
             f"[bold green]SecLists wordlists written to {seclists.output_dir}[/bold green]"
         )
+
+
+cache_app = typer.Typer(help="Manage scan results cache")
+app.add_typer(cache_app, name="cache")
+
+
+@cache_app.command("stats")
+def cache_stats() -> None:
+    """Show cache statistics and information."""
+    from stacksniff.cache import get_cache
+
+    cache = get_cache()
+    stats = cache.stats()
+
+    table = Table(
+        title="Cache Statistics",
+        box=None,
+        show_header=True,
+        header_style="bold blue",
+    )
+    table.add_column("Property", style="bold")
+    table.add_column("Value")
+
+    table.add_row("Cache Directory", stats["cache_directory"])
+    table.add_row("Total Entries", str(stats["total_entries"]))
+
+    size_bytes = stats["size_bytes"]
+    if size_bytes >= 1024 * 1024:
+        size_str = f"{size_bytes / (1024 * 1024):.2f} MB"
+    elif size_bytes >= 1024:
+        size_str = f"{size_bytes / 1024:.2f} KB"
+    else:
+        size_str = f"{size_bytes} B"
+    table.add_row("Total Size", size_str)
+    table.add_row("Hits", str(stats["hits"]))
+    table.add_row("Misses", str(stats["misses"]))
+
+    console.print(table)
+
+
+@cache_app.command("clear")
+def cache_clear() -> None:
+    """Clear all cached scan results."""
+    from stacksniff.cache import get_cache
+
+    cache = get_cache()
+    count = cache.clear()
+    console.print(f"[green]Successfully cleared {count} cache entry/entries.[/green]")
+
+
+@cache_app.command("purge")
+def cache_purge() -> None:
+    """Purge expired cache entries."""
+    from stacksniff.cache import get_cache
+
+    cache = get_cache()
+    count = cache.clear_expired()
+    console.print(f"[green]Successfully purged {count} expired cache entry/entries.[/green]")
 
 
 def main() -> None:

@@ -52,37 +52,21 @@ import asyncio
 import logging
 import re
 import time
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 import httpx
 
 from stacksniff.collectors.base import CollectorResult
-from stacksniff.fingerprints import Fingerprint, FingerprintStore
+from stacksniff.utils import get_apex_domain
+
+if TYPE_CHECKING:
+    from stacksniff.fingerprints import Fingerprint, FingerprintStore
 
 logger = logging.getLogger(__name__)
 
 
-def _apex_domain(host: str) -> str:
-    """Return the apex (registered) domain for *host*.
 
-    Handles common two-part ccTLDs (e.g. co.uk, com.au) by returning the last
-    three labels in that case; otherwise returns the last two labels.
-
-    Examples::
-
-        _apex_domain("v2.aiori.in")          -> "aiori.in"
-        _apex_domain("api.example.co.uk")    -> "example.co.uk"
-        _apex_domain("maps.googleapis.com")  -> "googleapis.com"
-    """
-    host = host.lower().split(":")[0]  # strip port
-    parts = host.split(".")
-    if len(parts) >= 3:
-        second_last = parts[-2]
-        last = parts[-1]
-        # Heuristic: short second-level (≤3 chars) + 2-char ccTLD → 3-part apex
-        if len(second_last) <= 3 and len(last) == 2:
-            return ".".join(parts[-3:])
-    return ".".join(parts[-2:]) if len(parts) >= 2 else host
 
 
 # Maximum concurrent subdomain probes (Pattern 9 from async playbook: Semaphore)
@@ -109,6 +93,16 @@ _SHARED_DOMAINS: frozenset[str] = frozenset({
     "yahoo.com",
 })
 
+# Brand-matching stopwords — terms common in tech names but not domain identifiers.
+_BRAND_STOPWORDS: frozenset[str] = frozenset({
+    "api", "apis", "cdn", "sdk", "js", "static", "hosted", "libraries",
+    "font", "fonts", "page", "pages", "web", "service", "services",
+    "platform", "platforms", "cloud",
+})
+
+# Regex special characters used in _is_safe_literal_pattern.
+_REGEX_SPECIALS: frozenset[str] = frozenset(r"^$[]{}()|*+?\\")
+
 
 class DomainMapper:
     """Collector that maps external and internal domain dependencies.
@@ -132,7 +126,7 @@ class DomainMapper:
     def __init__(
         self,
         base_url: str,
-        har_entries: list[dict],
+        har_entries: list[dict[str, Any]],
         fingerprint_store: FingerprintStore,
         *,
         timeout: float = 30.0,
@@ -149,7 +143,7 @@ class DomainMapper:
         host = self._target_netloc.split(":")[0]
         self._target_domain: str = host.removeprefix("www.")
         # Apex domain used for same-origin subdomain check (Fix 1)
-        self._target_apex: str = _apex_domain(self._target_domain)
+        self._target_apex: str = get_apex_domain(self._target_domain)
 
     # ------------------------------------------------------------------
     # Public collector interface
@@ -189,10 +183,10 @@ class DomainMapper:
     # Part 1 — External dependencies
     # ------------------------------------------------------------------
 
-    def _build_external_dependencies(self) -> list[dict]:
+    def _build_external_dependencies(self) -> list[dict[str, object]]:
         """Group HAR entries by cross-origin domain and classify via fingerprints."""
         # Group: domain -> accumulated info
-        groups: dict[str, dict] = {}
+        groups: dict[str, dict[str, Any]] = {}
 
         for entry in self._har_entries:
             url_str = entry.get("url", "")
@@ -209,7 +203,7 @@ class DomainMapper:
             if not netloc:
                 continue
             host_only = netloc.split(":")[0].removeprefix("www.")
-            if _apex_domain(host_only) == self._target_apex:
+            if get_apex_domain(host_only) == self._target_apex:
                 continue
 
             rtype = entry.get("resource_type", "") or ""
@@ -223,26 +217,36 @@ class DomainMapper:
                 }
 
             g = groups[netloc]
-            g["request_count"] += 1
+            req_count = g.get("request_count", 0)
+            g["request_count"] = (req_count if isinstance(req_count, int) else 0) + 1
             if rtype:
-                g["resource_types"].add(rtype)
-            if len(g["example_urls"]) < 3:
-                g["example_urls"].append(url_str)
+                res_types = g.get("resource_types")
+                if isinstance(res_types, set):
+                    res_types.add(rtype)
+            ex_urls = g.get("example_urls")
+            if isinstance(ex_urls, list) and len(ex_urls) < 3:
+                ex_urls.append(url_str)
 
         # Fingerprint reverse-lookup for every external domain
         all_fingerprints = self._store.get_all()
-        result: list[dict] = []
+        result: list[dict[str, object]] = []
 
-        for domain, info in sorted(groups.items(), key=lambda x: -x[1]["request_count"]):
+        def _get_sort_key(item: tuple[str, dict[str, Any]]) -> int:
+            count = item[1].get("request_count", 0)
+            return -int(count) if isinstance(count, (int, float)) else 0
+
+        for domain, info in sorted(groups.items(), key=_get_sort_key):
             tech_name, tech_category = self._classify_domain(domain, all_fingerprints)
+            res_types_val = info.get("resource_types")
+            res_types_list = sorted(list(res_types_val)) if isinstance(res_types_val, set) else []
             result.append(
                 {
                     "domain": domain,
                     "category": tech_category or "Unclassified",
                     "technology_name": tech_name,
-                    "resource_types": sorted(info["resource_types"]),
-                    "request_count": info["request_count"],
-                    "example_urls": info["example_urls"],
+                    "resource_types": res_types_list,
+                    "request_count": info.get("request_count", 0),
+                    "example_urls": info.get("example_urls", []),
                 }
             )
 
@@ -313,9 +317,10 @@ class DomainMapper:
         for label in labels:
             if not label:
                 return None
-            if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9]$", label):
-                if not (len(label) == 1 and label.isalnum()):
-                    return None
+            if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9]$", label) and not (
+                len(label) == 1 and label.isalnum()
+            ):
+                return None
 
         return prefix.lower()
 
@@ -325,12 +330,6 @@ class DomainMapper:
         if any brand word exactly equals a domain label (excluding TLD) or starts with it
         (for brand words of length >= 5).
         """
-        STOPWORDS = {
-            "api", "apis", "cdn", "sdk", "js", "static", "hosted", "libraries", 
-            "font", "fonts", "page", "pages", "web", "service", "services", 
-            "platform", "platforms", "cloud"
-        }
-
         domain_labels = domain.lower().split(".")
         if len(domain_labels) > 1:
             domain_labels = domain_labels[:-1]
@@ -338,7 +337,7 @@ class DomainMapper:
         brand_words = []
         for word in re.split(r"[^a-zA-Z0-9]+", tech_name):
             w = word.lower()
-            if w and w not in STOPWORDS:
+            if w and w not in _BRAND_STOPWORDS:
                 brand_words.append(w)
 
         if not brand_words:
@@ -363,7 +362,6 @@ class DomainMapper:
         the backslash is a special char, but ``googletagmanager.com/gtm.js``
         is safe).
         """
-        _REGEX_SPECIALS = set(r"^$[]{}()|*+?\\")
         return not any(ch in _REGEX_SPECIALS for ch in pattern)
 
     def _classify_domain(
@@ -429,7 +427,7 @@ class DomainMapper:
         # ------------------------------------------------------------------
         # Step 2 — Website suffix match (fallback)
         # ------------------------------------------------------------------
-        website_lookup: dict[str, list[dict]] = {}
+        website_lookup: dict[str, list[dict[str, Any]]] = {}
         for fp in fingerprints:
             if not fp.website:
                 continue
@@ -483,7 +481,7 @@ class DomainMapper:
     # Part 2 — Internal subdomain discovery via crt.sh
     # ------------------------------------------------------------------
 
-    async def _discover_internal_subdomains(self) -> list[dict]:
+    async def _discover_internal_subdomains(self) -> list[dict[str, object]]:
         """Query subdomain sources in fallback chain, then probe each one live."""
         if not self._target_domain:
             return []
@@ -524,7 +522,7 @@ class DomainMapper:
             probe_results = await asyncio.gather(*tasks, return_exceptions=True)
 
         # Filter out None (connection errors) and exceptions
-        internal_subs: list[dict] = []
+        internal_subs: list[dict[str, object]] = []
         for r in probe_results:
             if isinstance(r, dict):
                 internal_subs.append(r)
@@ -532,7 +530,7 @@ class DomainMapper:
                 logger.debug("DomainMapper probe exception: %s", r)
 
         # Sort by subdomain name for deterministic output
-        internal_subs.sort(key=lambda x: x["subdomain"])
+        internal_subs.sort(key=lambda x: str(x.get("subdomain") or ""))
         return internal_subs
 
     async def _fetch_crtsh_subdomains(self) -> list[str]:
@@ -762,7 +760,7 @@ class DomainMapper:
         semaphore: asyncio.Semaphore,
         fingerprints: list[Fingerprint],
         ct_source: str,
-    ) -> dict | None:
+    ) -> dict[str, Any] | None:
         """HEAD-probe a single subdomain and classify its tech stack.
 
         Returns a result dict on success (200/301/302/401/403), or
@@ -773,8 +771,8 @@ class DomainMapper:
             t0 = time.monotonic()
             try:
                 resp = await client.head(full_url)
-            except (httpx.ConnectError, httpx.DNSLookupError):
-                # Try http:// fallback silently
+            except (httpx.ConnectError, OSError):
+                # DNS failures and refused connections surface as ConnectError or OSError
                 try:
                     full_url = f"http://{subdomain}"
                     resp = await client.head(full_url)
@@ -796,7 +794,10 @@ class DomainMapper:
         # Normalise headers for easy lookup
         lower_headers = {k.lower(): v for k, v in resp.headers.items()}
         content_type = lower_headers.get("content-type")
-        redirect_location = lower_headers.get("location") if status in {301, 302, 307, 308} else None
+        redirect_statuses = {301, 302, 307, 308}
+        redirect_location = (
+            lower_headers.get("location") if status in redirect_statuses else None
+        )
 
         # Tech detection from response headers
         detected_tech: str | None = None
@@ -858,13 +859,12 @@ class DomainMapper:
                 continue
             for header_key, pattern_str in fp.headers.items():
                 val = lower_headers.get(header_key.lower())
-                if val is not None:
-                    if self._is_specific_match(pattern_str, val):
-                        if fp.confidence > best_confidence:
-                            best_name = fp.name
-                            best_category = fp.category
-                            best_confidence = fp.confidence
-                        break
+                if val is not None and self._is_specific_match(pattern_str, val):
+                    if fp.confidence > best_confidence:
+                        best_name = fp.name
+                        best_category = fp.category
+                        best_confidence = fp.confidence
+                    break
 
         # Apply minimum confidence threshold (Fix 3)
         if best_confidence < 0.75:
@@ -872,9 +872,10 @@ class DomainMapper:
             best_category = None
 
         # Apply formatting checks (Fix 3)
-        if best_name:
-            if len(best_name) > 30 or not re.match(r"^[A-Za-z0-9 .-]+$", best_name):
-                best_name = None
-                best_category = None
+        if best_name and (
+            len(best_name) > 30 or not re.match(r"^[A-Za-z0-9 .-]+$", best_name)
+        ):
+            best_name = None
+            best_category = None
 
         return best_name, best_category

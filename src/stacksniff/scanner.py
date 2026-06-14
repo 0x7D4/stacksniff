@@ -30,9 +30,14 @@ logger = logging.getLogger(__name__)
 class Scanner:
     """Orchestrates Phase 1 (HTTP), Phase 2 (Browser), and Phase 3 (Analysis)."""
 
-    def __init__(self, fingerprints_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        fingerprints_path: Path | None = None,
+        cache_ttl: int | None = None,
+    ) -> None:
         self.default_store: FingerprintStore | None = None
         self.fingerprints_path = fingerprints_path
+        self.cache_ttl = cache_ttl
 
     def _get_store(self, path: Path | None = None) -> FingerprintStore:
         """Resolve and load the FingerprintStore."""
@@ -56,8 +61,28 @@ class Scanner:
         fingerprints_path: Path | None = None,
         progress_callback: Callable[[str, str], None] | None = None,
         crawl_depth: int = 1,
+        cache_bypass: bool = False,
     ) -> ScanResult:
         """Scan a URL and return a structured ScanResult."""
+        options = {
+            "browser": browser,
+            "crawl_depth": crawl_depth,
+            "fingerprints_path": str(fingerprints_path) if fingerprints_path else None,
+        }
+
+        from stacksniff.cache import get_cache
+        cache = get_cache(self.cache_ttl)
+
+        import os
+        if "PYTEST_CURRENT_TEST" in os.environ and self.cache_ttl is None:
+            cache_bypass = True
+
+        if not cache_bypass:
+            cached_res = cache.get(url, options)
+            if cached_res is not None:
+                logger.info("Cache hit for URL: %s", url)
+                return cached_res
+
         start_time = time.monotonic()
         phases_completed: list[str] = []
 
@@ -83,10 +108,11 @@ class Scanner:
         )
 
         def _safe_res(res: Any) -> CollectorResult:
+            if isinstance(res, CollectorResult):
+                return res
             if isinstance(res, Exception):
                 logger.error("Collector raised an exception: %s", res, exc_info=res)
-                return CollectorResult()
-            return res
+            return CollectorResult()
 
         header_ok = _safe_res(header_res)
         cookie_ok = _safe_res(cookie_res)
@@ -136,6 +162,9 @@ class Scanner:
             if progress_callback:
                 progress_callback("browser", "started")
 
+            from stacksniff.browser_pool import initialize_pool
+            await initialize_pool()
+
             js_collector = JsCollector(timeout=timeout)
             network_collector = NetworkCollector(timeout=timeout, max_crawl_depth=crawl_depth)
 
@@ -146,8 +175,6 @@ class Scanner:
 
             js_ok = _safe_res(js_res)
             net_ok = _safe_res(net_res)
-
-            logger.debug("net_ok har_entries count: %d", len(net_ok.data.get("har_entries", [])))
 
             js_globals = js_ok.data.get("js_globals", {})
 
@@ -261,11 +288,9 @@ class Scanner:
             progress_callback("framework_probe", "started")
 
         # Collect HAR entries produced during browser phase
-        har_entries: list[dict] = []
+        har_entries: list[dict[str, Any]] = []
         if browser and playwright_installed:
             har_entries = net_ok.data.get("har_entries", [])
-
-        logger.debug("domain_mapper har_entries received: %d", len(har_entries))
 
         prober = FrameworkProber(tech_matches, url, timeout=timeout)
         domain_mapper = DomainMapper(
@@ -281,17 +306,19 @@ class Scanner:
             return_exceptions=True,
         )
 
-        if isinstance(probe_result_raw, Exception):
-            logger.error("FrameworkProber raised: %s", probe_result_raw)
-            probe_result: CollectorResult = CollectorResult()
-        else:
+        if isinstance(probe_result_raw, CollectorResult):
             probe_result = probe_result_raw
-
-        if isinstance(domain_result_raw, Exception):
-            logger.error("DomainMapper raised: %s", domain_result_raw)
-            domain_result: CollectorResult = CollectorResult()
         else:
+            if isinstance(probe_result_raw, BaseException):
+                logger.error("FrameworkProber raised: %s", probe_result_raw)
+            probe_result = CollectorResult()
+
+        if isinstance(domain_result_raw, CollectorResult):
             domain_result = domain_result_raw
+        else:
+            if isinstance(domain_result_raw, BaseException):
+                logger.error("DomainMapper raised: %s", domain_result_raw)
+            domain_result = CollectorResult()
 
         framework_endpoints = probe_result.data.get("framework_endpoints", [])
         evidence.framework_endpoints = framework_endpoints
@@ -315,7 +342,7 @@ class Scanner:
             rules_count=len(store.get_all()),
         )
 
-        return ScanResult(
+        res = ScanResult(
             url=url,
             scan_time=datetime.now(UTC),
             technologies=tech_matches,
@@ -325,6 +352,8 @@ class Scanner:
             runtime_dependencies=evidence.runtime_dependencies,
             discovered_subdomains=evidence.discovered_subdomains,
         )
+        cache.set(url, options, res)
+        return res
 
 
 def scan_sync(

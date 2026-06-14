@@ -64,17 +64,15 @@ class CookieCollector:
         result = CollectorResult()
 
         transport = httpx.AsyncHTTPTransport(retries=1)
-        client_kwargs = {
-            "timeout": httpx.Timeout(self._timeout),
-            "follow_redirects": True,
-            "max_redirects": self._max_redirects,
-            "transport": transport,
-            "headers": {"User-Agent": self._user_agent},
-            "verify": True,
-        }
-
         try:
-            async with httpx.AsyncClient(**client_kwargs) as client:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(self._timeout),
+                follow_redirects=True,
+                max_redirects=self._max_redirects,
+                transport=transport,
+                headers={"User-Agent": self._user_agent},
+                verify=True,
+            ) as client:
                 response = await client.get(url)
 
                 # Extract cookies from jar (includes all hops)

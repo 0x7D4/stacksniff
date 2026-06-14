@@ -26,7 +26,7 @@ class Fingerprint:
     scripts: list[str] = field(default_factory=list)
     html: list[str] = field(default_factory=list)
     js_globals: dict[str, str] = field(default_factory=dict)
-    dom: dict | list = field(default_factory=dict)
+    dom: dict[str, object] | list[str] = field(default_factory=dict)
     implies: list[str] = field(default_factory=list)
     confidence: float = 0.5
 
@@ -53,36 +53,95 @@ class FingerprintStore:
         with path.open("r", encoding="utf-8") as f:
             raw_data = yaml.safe_load(f) or {}
 
-        categories = raw_data.get("categories", {})
+        raw_categories = raw_data.get("categories", {})
+        categories: dict[str, dict[str, str]] = {}
+        if isinstance(raw_categories, dict):
+            for k, v in raw_categories.items():
+                if isinstance(v, dict):
+                    categories[str(k)] = {str(ki): str(vi) for ki, vi in v.items()}
+
         version = str(raw_data.get("version", "1.0.0"))
         technologies: dict[str, Fingerprint] = {}
 
         raw_techs = raw_data.get("technologies", {})
-        for name, data in raw_techs.items():
-            if not isinstance(data, dict):
-                continue
+        if isinstance(raw_techs, dict):
+            for name_raw, data in raw_techs.items():
+                if not isinstance(data, dict):
+                    continue
 
-            # Standardize tech key (lowercase) for lookup
-            tech_key = name.lower()
+                name = str(name_raw)
+                # Standardize tech key (lowercase) for lookup
+                tech_key = name.lower()
 
-            cat_slug = data.get("category", "other")
-            cat_info = categories.get(cat_slug)
-            category_name = cat_info.get("name", cat_slug) if isinstance(cat_info, dict) else cat_slug
+                cat_slug = str(data.get("category", "other"))
+                cat_info = categories.get(cat_slug)
+                category_name = (
+                    str(cat_info.get("name", cat_slug))
+                    if cat_info
+                    else cat_slug
+                )
 
-            technologies[tech_key] = Fingerprint(
-                name=data.get("name", name),  # fallback to key if name not specified
-                category=category_name,
-                website=data.get("website"),
-                headers=data.get("headers", {}),
-                cookies=data.get("cookies", {}),
-                meta=data.get("meta", {}),
-                scripts=data.get("scripts", []),
-                html=data.get("html", []),
-                js_globals=data.get("js_globals", {}),
-                dom=data.get("dom", {}),
-                implies=data.get("implies", []),
-                confidence=float(data.get("confidence", 0.5)),
-            )
+                website = data.get("website")
+                website_str = str(website) if website is not None else None
+
+                headers = data.get("headers")
+                headers_dict = (
+                    {str(k): str(v) for k, v in headers.items()}
+                    if isinstance(headers, dict)
+                    else {}
+                )
+
+                cookies = data.get("cookies")
+                cookies_dict = (
+                    {str(k): str(v) for k, v in cookies.items()}
+                    if isinstance(cookies, dict)
+                    else {}
+                )
+
+                meta = data.get("meta")
+                meta_dict = (
+                    {str(k): str(v) for k, v in meta.items()}
+                    if isinstance(meta, dict)
+                    else {}
+                )
+
+                scripts = data.get("scripts")
+                scripts_list = [str(x) for x in scripts] if isinstance(scripts, list) else []
+
+                html = data.get("html")
+                html_list = [str(x) for x in html] if isinstance(html, list) else []
+
+                js_globals = data.get("js_globals")
+                js_globals_dict = (
+                    {str(k): str(v) for k, v in js_globals.items()}
+                    if isinstance(js_globals, dict)
+                    else {}
+                )
+
+                dom = data.get("dom")
+                dom_val: dict[str, object] | list[str] = {}
+                if isinstance(dom, dict):
+                    dom_val = {str(k): v for k, v in dom.items()}
+                elif isinstance(dom, list):
+                    dom_val = [str(x) for x in dom]
+
+                implies = data.get("implies")
+                implies_list = [str(x) for x in implies] if isinstance(implies, list) else []
+
+                technologies[tech_key] = Fingerprint(
+                    name=str(data.get("name", name)),  # fallback to key if name not specified
+                    category=category_name,
+                    website=website_str,
+                    headers=headers_dict,
+                    cookies=cookies_dict,
+                    meta=meta_dict,
+                    scripts=scripts_list,
+                    html=html_list,
+                    js_globals=js_globals_dict,
+                    dom=dom_val,
+                    implies=implies_list,
+                    confidence=float(data.get("confidence", 0.5)),
+                )
 
         return cls(categories=categories, technologies=technologies, version=version)
 
@@ -109,10 +168,7 @@ class FingerprintStore:
         """Return a set of all unique DOM selectors used in technologies."""
         selectors = set()
         for f in self.technologies.values():
-            if isinstance(f.dom, list):
-                for sel in f.dom:
-                    selectors.add(sel)
-            elif isinstance(f.dom, dict):
+            if isinstance(f.dom, (list, dict)):
                 for sel in f.dom:
                     selectors.add(sel)
         return selectors

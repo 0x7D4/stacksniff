@@ -80,6 +80,68 @@ class ScanResult:
         """Convert the ScanResult to a JSON string."""
         return json.dumps(self.to_dict(), indent=indent)
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ScanResult:
+        """Create a ScanResult from a serialized dictionary."""
+        scan_time_val = data["scan_time"]
+        if isinstance(scan_time_val, str):
+            scan_time = datetime.fromisoformat(scan_time_val)
+        else:
+            scan_time = scan_time_val
+
+        technologies = []
+        for t in data.get("technologies", []):
+            evidence = []
+            for ev in t.get("evidence", []):
+                evidence.append(
+                    Evidence(
+                        source=ev["source"],
+                        key=ev["key"],
+                        matched=ev["matched"],
+                        pattern=ev["pattern"],
+                    )
+                )
+            technologies.append(
+                TechMatch(
+                    name=t["name"],
+                    category=t["category"],
+                    version=t.get("version"),
+                    confidence=float(t["confidence"]),
+                    evidence=evidence,
+                )
+            )
+
+        api_endpoints = []
+        for ae in data.get("api_endpoints", []):
+            api_endpoints.append(
+                DetectedEndpoint(
+                    url=ae["url"],
+                    method=ae["method"],
+                    content_type=ae.get("content_type"),
+                    pattern_matched=ae["pattern_matched"],
+                    confidence=float(ae["confidence"]),
+                )
+            )
+
+        meta_data = data["meta"]
+        meta = ScanMeta(
+            duration_seconds=float(meta_data["duration_seconds"]),
+            phases_completed=list(meta_data["phases_completed"]),
+            fingerprints_version=meta_data["fingerprints_version"],
+            rules_count=int(meta_data["rules_count"]),
+        )
+
+        return cls(
+            url=data["url"],
+            scan_time=scan_time,
+            technologies=technologies,
+            api_endpoints=api_endpoints,
+            meta=meta,
+            openapi_spec_found=bool(data.get("openapi_spec_found", False)),
+            runtime_dependencies=data.get("runtime_dependencies", []),
+            discovered_subdomains=data.get("discovered_subdomains", []),
+        )
+
 
 @dataclass(slots=True)
 class CollectedEvidence:

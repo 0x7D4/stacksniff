@@ -149,7 +149,9 @@ def _extract_meta_tags(soup: BeautifulSoup) -> dict[str, str]:
         key = tag.get("name") or tag.get("property") or tag.get("http-equiv")
         content = tag.get("content")
         if key and content:
-            meta[key.lower()] = content
+            key_str = key[0] if isinstance(key, list) else key
+            if key_str:
+                meta[key_str.lower()] = str(content)
     return meta
 
 
@@ -225,7 +227,9 @@ def _extract_data_attributes(soup: BeautifulSoup) -> dict[str, str]:
     return attrs
 
 
-def _extract_dom_evidence(soup: BeautifulSoup, selectors: set[str]) -> dict[str, list[dict[str, Any]]]:
+def _extract_dom_evidence(
+    soup: BeautifulSoup, selectors: set[str]
+) -> dict[str, list[dict[str, Any]]]:
     """Extract information for specified DOM CSS selectors."""
     dom_findings: dict[str, list[dict[str, Any]]] = {}
     for sel in selectors:

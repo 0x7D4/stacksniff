@@ -169,6 +169,8 @@ async def fetch_and_convert(
             res = await client.get(url)
             res.raise_for_status()
             data = res.json()
+            if not isinstance(data, dict):
+                data = {}
             if progress_callback:
                 progress_callback(char)
             return data
@@ -244,7 +246,11 @@ async def fetch_and_convert(
 
             # Scripts
             scripts = []
-            raw_script = data.get("scriptSrc", []) or data.get("scripts", []) or data.get("script", [])
+            raw_script = (
+                data.get("scriptSrc", [])
+                or data.get("scripts", [])
+                or data.get("script", [])
+            )
             raw_script_list = [raw_script] if isinstance(raw_script, str) else raw_script
             for pat in raw_script_list:
                 if not isinstance(pat, str):
@@ -271,7 +277,7 @@ async def fetch_and_convert(
                     break
 
             # DOM
-            dom = None
+            dom: list[str] | dict[str, Any] | None = None
             raw_dom = data.get("dom")
             if raw_dom:
                 if isinstance(raw_dom, str):
@@ -279,16 +285,17 @@ async def fetch_and_convert(
                 elif isinstance(raw_dom, list):
                     dom = [item for item in raw_dom if isinstance(item, str)]
                 elif isinstance(raw_dom, dict):
-                    dom = {}
+                    dom_dict: dict[str, Any] = {}
                     for sel, rule in raw_dom.items():
                         if not isinstance(rule, dict):
-                            dom[sel] = {}
+                            dom_dict[sel] = {}
                             continue
-                        normalized_rule = {}
+                        normalized_rule: dict[str, Any] = {}
                         if "exists" in rule:
                             normalized_rule["exists"] = ""
                         if "text" in rule:
-                            patterns = [rule["text"]] if isinstance(rule["text"], str) else rule["text"]
+                            text_val = rule["text"]
+                            patterns = [text_val] if isinstance(text_val, str) else text_val
                             for pat in patterns:
                                 if isinstance(pat, str):
                                     reg, conf = parse_pattern(pat)
@@ -327,7 +334,8 @@ async def fetch_and_convert(
                                         break
                             if attrs:
                                 normalized_rule["attributes"] = attrs
-                        dom[sel] = normalized_rule
+                        dom_dict[sel] = normalized_rule
+                    dom = dom_dict
 
             # Implies
             implies = parse_implies(data.get("implies", []))
@@ -408,11 +416,11 @@ async def fetch_and_convert(
             # Hybrid merge: upstream data updated with custom rules taking precedence
             custom_data = custom_techs[custom_key_matching]
             merged_tech = upstream_data.copy()
-            
+
             # Confidence overrides
             if "confidence" in custom_data:
                 merged_tech["confidence"] = custom_data["confidence"]
-                
+
             # Merge list properties (html, scripts)
             for list_key in ["html", "scripts"]:
                 if list_key in custom_data:
@@ -420,21 +428,21 @@ async def fetch_and_convert(
                     c_list = c_val if isinstance(c_val, list) else [c_val]
                     u_val = merged_tech.get(list_key, [])
                     u_list = u_val if isinstance(u_val, list) else [u_val]
-                    
+
                     combined = list(u_list)
                     for val in c_list:
                         if val not in combined:
                             combined.append(val)
                     if combined:
                         merged_tech[list_key] = combined
-                        
+
             # Merge dict properties (js_globals, headers, cookies, meta)
             for dict_key in ["js_globals", "headers", "cookies", "meta"]:
                 if dict_key in custom_data and isinstance(custom_data[dict_key], dict):
                     merged_dict = merged_tech.get(dict_key, {}).copy()
                     merged_dict.update(custom_data[dict_key])
                     merged_tech[dict_key] = merged_dict
-            
+
             # Merge dom property
             if "dom" in custom_data:
                 c_dom = custom_data["dom"]
@@ -451,7 +459,7 @@ async def fetch_and_convert(
                     merged_tech["dom"] = merged_dict
                 else:
                     merged_tech["dom"] = c_dom
-            
+
             merged_technologies[upstream_key_lower] = merged_tech
         else:
             techs_added += 1
@@ -459,7 +467,7 @@ async def fetch_and_convert(
 
     # 5. Output merged results
     output_categories = {}
-    for cid, info in categories_map.items():
+    for _cid, info in categories_map.items():
         if isinstance(info, dict) and "name" in info:
             slug = slugify_category(info["name"])
             output_categories[slug] = {"name": info["name"]}

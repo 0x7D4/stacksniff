@@ -33,6 +33,7 @@ import httpx
 import yaml
 
 from stacksniff.collectors.base import CollectorResult, NetworkRequest
+from stacksniff.utils import is_first_party
 
 logger = logging.getLogger(__name__)
 
@@ -95,9 +96,9 @@ class NetworkCollector:
         (no browser traffic) if Playwright is not installed.
         """
         result = CollectorResult()
-        browser_requests: list[dict] = []
-        har_entries: list[dict] = []
-        probed: list[dict] = []
+        browser_requests: list[dict[str, object]] = []
+        har_entries: list[dict[str, object]] = []
+        probed: list[dict[str, object]] = []
 
         # ---- Phase 1: Browser network interception --------------------
         browser_requests, har_entries, browser_errors = await self._collect_browser(url)
@@ -122,14 +123,16 @@ class NetworkCollector:
     # Phase 1 — Playwright network capture
     # ------------------------------------------------------------------
 
-    async def _collect_browser(self, url: str) -> tuple[list[dict], list[dict], list[str]]:
+    async def _collect_browser(
+        self, url: str
+    ) -> tuple[list[dict[str, object]], list[dict[str, object]], list[str]]:
         """Launch browser, intercept XHR/fetch, crawl same-origin links, return results."""
-        captured: list[dict] = []
-        har_entries: list[dict] = []
+        captured: list[dict[str, object]] = []
+        har_entries: list[dict[str, object]] = []
         errors: list[str] = []
 
         try:
-            from playwright.async_api import async_playwright
+            from playwright.async_api import async_playwright  # noqa: F401
         except ImportError:
             errors.append(
                 "Playwright is not installed - browser network capture skipped. "
@@ -139,12 +142,13 @@ class NetworkCollector:
             return captured, har_entries, errors
 
         # Mutable stores shared by event handlers
-        pending: dict[Any, dict] = {}  # request object -> partial dict
-        finished: list[dict] = []
+        pending: dict[Any, dict[str, object]] = {}  # request object -> partial dict
+        finished: list[dict[str, object]] = []
 
         try:
-            async with async_playwright() as pw:
-                browser = await pw.chromium.launch(headless=True)
+            from stacksniff.browser_pool import get_pool
+            pool = get_pool()
+            async with pool.acquire() as browser:
                 try:
                     context = await browser.new_context(
                         java_script_enabled=True,
@@ -274,21 +278,49 @@ class NetworkCollector:
 
                     # Convert to serialised NetworkRequest dicts and HAR entries
                     for entry in finished:
-                        timing_data = {}
+                        timing_data: dict[str, object] = {}
                         with contextlib.suppress(Exception):
                             req_obj = entry.get("request")
                             if req_obj and hasattr(req_obj, "timing"):
                                 timing_data = req_obj.timing or {}
 
-                        har_entry = {
-                            "url": entry["url"],
-                            "method": entry["method"],
-                            "status": entry.get("status"),
-                            "content_type": entry.get("content_type"),
-                            "request_headers": entry.get("request_headers", {}),
-                            "response_headers": entry.get("response_headers", {}),
+                        entry_url = str(entry.get("url") or "")
+                        entry_method = str(entry.get("method") or "")
+                        entry_rtype = str(entry.get("resource_type") or "")
+                        entry_status = entry.get("status")
+                        entry_status_val = (
+                            int(entry_status) if isinstance(entry_status, int) else None
+                        )
+                        entry_content_type = entry.get("content_type")
+                        entry_content_type_str = (
+                            str(entry_content_type)
+                            if entry_content_type is not None
+                            else None
+                        )
+
+                        raw_req_headers = entry.get("request_headers")
+                        entry_req_headers = (
+                            {str(k): str(v) for k, v in raw_req_headers.items()}
+                            if isinstance(raw_req_headers, dict)
+                            else {}
+                        )
+
+                        raw_resp_headers = entry.get("response_headers")
+                        entry_resp_headers = (
+                            {str(k): str(v) for k, v in raw_resp_headers.items()}
+                            if isinstance(raw_resp_headers, dict)
+                            else {}
+                        )
+
+                        har_entry: dict[str, object] = {
+                            "url": entry_url,
+                            "method": entry_method,
+                            "status": entry_status_val,
+                            "content_type": entry_content_type_str,
+                            "request_headers": entry_req_headers,
+                            "response_headers": entry_resp_headers,
                             "timing": timing_data,
-                            "resource_type": entry.get("resource_type"),
+                            "resource_type": entry_rtype,
                         }
                         har_entries.append(har_entry)
 
@@ -296,29 +328,28 @@ class NetworkCollector:
                         # that go TO the target domain or its subdomains. Third-party
                         # calls fired by analytics/maps/CDN scripts are silently discarded.
                         # Probe entries (resource_type="probe") always pass through.
-                        entry_rtype = entry.get("resource_type", "")
                         if entry_rtype != "probe":
                             if entry_rtype not in ("xhr", "fetch"):
                                 continue
                             try:
-                                entry_netloc = urlparse(entry["url"]).netloc.lower()
+                                entry_netloc = urlparse(entry_url).netloc.lower()
                             except Exception:
                                 entry_netloc = ""
-                            if entry_netloc and not _is_first_party(entry_netloc, _target_netloc):
+                            if entry_netloc and not is_first_party(entry_netloc, _target_netloc):
                                 logger.debug(
                                     "NetworkCollector: skipping cross-origin request %s",
-                                    entry["url"],
+                                    entry_url,
                                 )
                                 continue
 
                         nr = NetworkRequest(
-                            url=entry["url"],
-                            method=entry["method"],
-                            resource_type=entry["resource_type"],
-                            status=entry.get("status"),
-                            content_type=entry.get("content_type"),
-                            request_headers=entry.get("request_headers", {}),
-                            response_headers=entry.get("response_headers", {}),
+                            url=entry_url,
+                            method=entry_method,
+                            resource_type=entry_rtype,
+                            status=entry_status_val,
+                            content_type=entry_content_type_str,
+                            request_headers=entry_req_headers,
+                            response_headers=entry_resp_headers,
                         )
                         captured.append(_nr_to_dict(nr))
 
@@ -335,11 +366,13 @@ class NetworkCollector:
     # Phase 2 — Probe well-known paths with httpx
     # ------------------------------------------------------------------
 
-    async def _probe_paths(self, url: str) -> tuple[list[dict], list[str], dict | None, list[str]]:
+    async def _probe_paths(
+        self, url: str
+    ) -> tuple[list[dict[str, object]], list[str], dict[str, object] | None, list[str]]:
         """HEAD/GET well-known paths and return those that respond usefully."""
-        probed: list[dict] = []
+        probed: list[dict[str, object]] = []
         errors: list[str] = []
-        parsed_spec: dict | None = None
+        parsed_spec: dict[str, object] | None = None
         spec_endpoints: list[str] = []
 
         # Derive base URL (scheme + host)
@@ -374,7 +407,7 @@ class NetworkCollector:
                         # Don't pollute errors for expected 404s etc.
                         logger.debug("Probe exception: %s", r)
                         continue
-                    if r is not None:
+                    if r is not None and isinstance(r, dict):
                         probed.append(r["request_dict"])
 
                         # Attempt to parse as OpenAPI if not already found
@@ -443,7 +476,7 @@ class NetworkCollector:
         client: httpx.AsyncClient,
         base_url: str,
         path: str,
-    ) -> dict | None:
+    ) -> dict[str, Any] | None:
         """Probe a single path. Returns dict with request_dict and text, or None."""
         full_url = urljoin(base_url, path)
         try:
@@ -491,28 +524,10 @@ class NetworkCollector:
 # ------------------------------------------------------------------
 
 
-def _get_apex_domain(host: str) -> str:
-    host = host.lower().split(":")[0]
-    parts = host.split(".")
-    if len(parts) == 4 and all(p.isdigit() for p in parts):
-        return host
-    if len(parts) >= 3:
-        second_last = parts[-2]
-        last = parts[-1]
-        if len(second_last) <= 3 and len(last) == 2:
-            return ".".join(parts[-3:])
-    return ".".join(parts[-2:]) if len(parts) >= 2 else host
 
 
-def _is_first_party(host1: str, host2: str) -> bool:
-    h1 = host1.lower().split(":")[0].removeprefix("www.")
-    h2 = host2.lower().split(":")[0].removeprefix("www.")
-    if h1 == h2:
-        return True
-    return _get_apex_domain(h1) == _get_apex_domain(h2)
 
-
-def _nr_to_dict(nr: NetworkRequest) -> dict:
+def _nr_to_dict(nr: NetworkRequest) -> dict[str, object]:
     """Serialise a frozen NetworkRequest to a plain dict.
 
     We store dicts in ``CollectorResult.data`` so the result is
