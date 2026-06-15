@@ -35,13 +35,28 @@ class ScanCache:
 
     def _make_key(self, url: str, options: dict[str, Any]) -> str:
         """Compute SHA-256 hash from URL and non-transient options."""
-        # Clean options: keep browser, crawl_depth, fingerprints_path, but exclude transient ones
-        clean_opts = {
-            k: str(v)
-            for k, v in options.items()
-            if k not in ("timeout", "cache_bypass", "cache_ttl", "progress_callback")
+        def _as_bool(val: Any, default: bool) -> bool:
+            if val is None:
+                return default
+            if isinstance(val, bool):
+                return val
+            if isinstance(val, str):
+                return val.lower() in ("true", "1", "yes")
+            return bool(val)
+
+        canonical = {
+            "browser": _as_bool(options.get("browser"), True),
+            "scan_technologies": _as_bool(options.get("scan_technologies"), True),
+            "scan_subdomains": _as_bool(options.get("scan_subdomains", options.get("subdomains")), True),
+            "scan_endpoints": _as_bool(options.get("scan_endpoints"), True),
+            "fingerprints_path": options.get("fingerprints_path"),
+            "crawl_depth": int(options.get("crawl_depth", 1)),
         }
-        payload = f"{url.strip()}:{json.dumps(clean_opts, sort_keys=True)}"
+        # Normalize fingerprints_path to either a string or None
+        fp_path = canonical["fingerprints_path"]
+        canonical["fingerprints_path"] = str(fp_path) if fp_path else None
+
+        payload = f"{url.strip()}:{json.dumps(canonical, sort_keys=True)}"
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def get(self, url: str, options: dict[str, Any]) -> ScanResult | None:

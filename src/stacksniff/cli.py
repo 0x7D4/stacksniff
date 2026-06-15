@@ -169,14 +169,18 @@ def scan(
                             description="[green]Browser analysis: done",
                         )
 
-            return await scanner.scan(
-                url,
-                browser=browser,
-                timeout=timeout,
-                fingerprints_path=fingerprints,
-                progress_callback=progress_callback,
-                cache_bypass=not cache,
-            )
+            try:
+                return await scanner.scan(
+                    url,
+                    browser=browser,
+                    timeout=timeout,
+                    fingerprints_path=fingerprints,
+                    progress_callback=progress_callback,
+                    cache_bypass=not cache,
+                )
+            finally:
+                from stacksniff.browser_pool import shutdown_pool
+                await shutdown_pool()
 
     if not json_output:
         console.print(

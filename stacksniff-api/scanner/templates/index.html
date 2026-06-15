@@ -1,0 +1,1809 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>stacksniff — Cybernetic Tech Stack Scanner</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <style>
+        :root {
+            --bg-base: #07090e;
+            --bg-grid: rgba(255, 255, 255, 0.015);
+            --bg-card: rgba(18, 22, 38, 0.65);
+            --bg-card-hover: rgba(26, 32, 54, 0.8);
+            --border-glow: rgba(123, 44, 191, 0.25);
+            --border-color: rgba(255, 255, 255, 0.08);
+            --border-hover: rgba(255, 255, 255, 0.16);
+            --primary: #9d4edd;
+            --primary-glow: rgba(157, 78, 221, 0.4);
+            --secondary: #3a0ca3;
+            --cyan: #4cc9f0;
+            --cyan-glow: rgba(76, 201, 240, 0.3);
+            --text-main: #f3f4f6;
+            --text-muted: #9ca3af;
+            --text-dim: #6b7280;
+            --green: #10b981;
+            --green-glow: rgba(16, 185, 129, 0.2);
+            --red: #f43f5e;
+            --red-glow: rgba(244, 63, 94, 0.25);
+            --yellow: #f59e0b;
+            --yellow-glow: rgba(245, 158, 11, 0.2);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--bg-base);
+            background-image: 
+                radial-gradient(circle at 10% 20%, rgba(123, 44, 191, 0.08) 0%, transparent 40%),
+                radial-gradient(circle at 90% 80%, rgba(76, 201, 240, 0.05) 0%, transparent 40%),
+                linear-gradient(var(--bg-grid) 1px, transparent 1px),
+                linear-gradient(90deg, var(--bg-grid) 1px, transparent 1px);
+            background-size: 100% 100%, 100% 100%, 24px 24px, 24px 24px;
+            color: var(--text-main);
+            font-family: 'Inter', sans-serif;
+            min-height: 100vh;
+            overflow-x: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Ambient blur spots */
+        .ambient-blur-1 {
+            position: absolute;
+            top: -200px;
+            left: 20%;
+            width: 600px;
+            height: 600px;
+            background: radial-gradient(circle, rgba(157, 78, 221, 0.12) 0%, transparent 70%);
+            z-index: -1;
+            pointer-events: none;
+            filter: blur(80px);
+        }
+
+        .ambient-blur-2 {
+            position: absolute;
+            bottom: -200px;
+            right: 10%;
+            width: 500px;
+            height: 500px;
+            background: radial-gradient(circle, rgba(76, 201, 240, 0.08) 0%, transparent 70%);
+            z-index: -1;
+            pointer-events: none;
+            filter: blur(80px);
+        }
+
+        header {
+            background: rgba(7, 9, 14, 0.8);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border-color);
+            padding: 1rem 2rem;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo-container {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .logo-icon {
+            font-size: 1.75rem;
+            background: linear-gradient(135deg, var(--cyan), var(--primary));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            filter: drop-shadow(0 0 8px rgba(157, 78, 221, 0.5));
+            animation: rotateRadar 6s linear infinite;
+        }
+
+        @keyframes rotateRadar {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .logo-text {
+            font-family: 'Outfit', sans-serif;
+            font-weight: 800;
+            font-size: 1.5rem;
+            letter-spacing: -0.5px;
+            background: linear-gradient(to right, #ffffff, #d8b4fe);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .logo-badge {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.65rem;
+            background: rgba(157, 78, 221, 0.15);
+            border: 1px solid rgba(157, 78, 221, 0.3);
+            color: var(--primary);
+            padding: 0.15rem 0.4rem;
+            border-radius: 4px;
+            font-weight: bold;
+            letter-spacing: 0.5px;
+        }
+
+        .header-meta {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            background-color: var(--green);
+            border-radius: 50%;
+            display: inline-block;
+            box-shadow: 0 0 8px var(--green);
+            animation: pulseGreen 2s infinite;
+        }
+
+        @keyframes pulseGreen {
+            0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+            70% { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+        }
+
+        .main-container {
+            flex: 1;
+            display: grid;
+            grid-template-columns: 320px 1fr;
+            min-height: calc(100vh - 65px);
+        }
+
+        /* Sidebar Styling */
+        .sidebar {
+            border-right: 1px solid var(--border-color);
+            background: rgba(10, 12, 22, 0.5);
+            backdrop-filter: blur(16px);
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+            max-height: calc(100vh - 65px);
+            overflow-y: auto;
+        }
+
+        .sidebar-title {
+            font-family: 'Outfit', sans-serif;
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--text-main);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .sidebar-title i {
+            color: var(--primary);
+        }
+
+        .history-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            overflow-y: auto;
+            flex: 1;
+        }
+
+        .history-item {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            padding: 0.9rem;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .history-item:hover {
+            border-color: var(--border-hover);
+            background: var(--bg-card-hover);
+            transform: translateX(4px);
+        }
+
+        .history-item.active {
+            border-color: var(--primary);
+            background: rgba(157, 78, 221, 0.08);
+            box-shadow: 0 0 12px rgba(157, 78, 221, 0.15);
+        }
+
+        .history-item.active::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 4px;
+            background: linear-gradient(to bottom, var(--cyan), var(--primary));
+        }
+
+        .history-url {
+            font-weight: 600;
+            font-size: 0.85rem;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            margin-bottom: 0.35rem;
+        }
+
+        .history-meta {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .badge {
+            font-size: 0.7rem;
+            padding: 0.15rem 0.5rem;
+            border-radius: 30px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+        }
+
+        .badge-pending {
+            background: var(--yellow-glow);
+            color: var(--yellow);
+            border: 1px solid rgba(245, 158, 11, 0.3);
+        }
+
+        .badge-running {
+            background: var(--cyan-glow);
+            color: var(--cyan);
+            border: 1px solid rgba(76, 201, 240, 0.3);
+            animation: pulseCyan 1.5s infinite alternate;
+        }
+
+        @keyframes pulseCyan {
+            0% { opacity: 0.7; }
+            100% { opacity: 1; }
+        }
+
+        .badge-completed {
+            background: var(--green-glow);
+            color: var(--green);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+        }
+
+        .badge-failed {
+            background: var(--red-glow);
+            color: var(--red);
+            border: 1px solid rgba(244, 63, 94, 0.3);
+        }
+
+        /* Workspace / Output Section */
+        .workspace {
+            padding: 2rem;
+            overflow-y: auto;
+            max-height: calc(100vh - 65px);
+            display: flex;
+            flex-direction: column;
+            gap: 2rem;
+        }
+
+        /* Controls Panel */
+        .controls-panel {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 1.75rem;
+            backdrop-filter: blur(16px);
+            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.2);
+            transition: border-color 0.3s;
+        }
+
+        .controls-panel:focus-within {
+            border-color: rgba(157, 78, 221, 0.4);
+        }
+
+        .scan-form {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 1.5rem;
+            align-items: end;
+        }
+
+        .input-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .input-label {
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .url-input-wrapper {
+            position: relative;
+            display: flex;
+            align-items: center;
+        }
+
+        .url-input-icon {
+            position: absolute;
+            left: 1rem;
+            color: var(--text-dim);
+            font-size: 1.1rem;
+        }
+
+        .url-input {
+            width: 100%;
+            background: rgba(10, 12, 22, 0.8);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 0.9rem 1rem 0.9rem 2.75rem;
+            color: var(--text-main);
+            font-family: inherit;
+            font-size: 1rem;
+            transition: all 0.3s;
+        }
+
+        .url-input:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 10px rgba(157, 78, 221, 0.2);
+            background: rgba(10, 12, 22, 0.95);
+        }
+
+        .options-row {
+            display: flex;
+            gap: 2rem;
+            margin-top: 1rem;
+            grid-column: 1 / span 2;
+        }
+
+        .checkbox-container {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            cursor: pointer;
+            user-select: none;
+            font-size: 0.9rem;
+            color: var(--text-muted);
+        }
+
+        .checkbox-container input {
+            display: none;
+        }
+
+        .checkbox-custom {
+            width: 18px;
+            height: 18px;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(10, 12, 22, 0.6);
+            transition: all 0.2s;
+        }
+
+        .checkbox-container input:checked + .checkbox-custom {
+            background: var(--primary);
+            border-color: var(--primary);
+            box-shadow: 0 0 8px var(--primary-glow);
+        }
+
+        .checkbox-custom::after {
+            content: "\f00c";
+            font-family: "Font Awesome 6 Free";
+            font-weight: 900;
+            color: white;
+            font-size: 0.65rem;
+            display: none;
+        }
+
+        .checkbox-container input:checked + .checkbox-custom::after {
+            display: block;
+        }
+
+        .range-container {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+        }
+
+        .range-input {
+            width: 120px;
+            accent-color: var(--primary);
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+            height: 6px;
+            outline: none;
+        }
+
+        .btn-scan {
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            border: none;
+            border-radius: 10px;
+            color: white;
+            font-family: 'Outfit', sans-serif;
+            font-weight: 700;
+            font-size: 1.05rem;
+            padding: 0.9rem 2.5rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: 0 4px 15px rgba(123, 44, 191, 0.3);
+            white-space: nowrap;
+        }
+
+        .btn-scan:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(157, 78, 221, 0.45);
+        }
+
+        .btn-scan:active {
+            transform: translateY(1px);
+        }
+
+        .btn-scan:disabled {
+            background: var(--text-dim);
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        /* Results / Tracking Dashboard View */
+        .dashboard-view {
+            display: flex;
+            flex-direction: column;
+            gap: 2rem;
+        }
+
+        /* Loading / Scanning Progress Status */
+        .status-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 2rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 2rem;
+        }
+
+        .status-info {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .status-url {
+            font-family: 'Outfit', sans-serif;
+            font-weight: 700;
+            font-size: 1.4rem;
+        }
+
+        .status-row {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .status-message {
+            font-size: 0.9rem;
+            color: var(--text-muted);
+        }
+
+        .cancel-scan-btn {
+            background: transparent;
+            border: 1px solid rgba(244, 63, 94, 0.4);
+            color: var(--red);
+            border-radius: 8px;
+            padding: 0.5rem 1rem;
+            font-size: 0.85rem;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .cancel-scan-btn:hover {
+            background: var(--red-glow);
+            border-color: var(--red);
+        }
+
+        /* Phase progress tracker */
+        .phases-tracker {
+            display: flex;
+            gap: 1.5rem;
+            margin-top: 1rem;
+        }
+
+        .phase-step {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.5rem;
+            position: relative;
+            flex: 1;
+        }
+
+        .phase-circle {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            border: 2px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.9rem;
+            color: var(--text-dim);
+            background: rgba(10, 12, 22, 0.8);
+            transition: all 0.3s;
+        }
+
+        .phase-label {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--text-dim);
+            text-align: center;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+        }
+
+        .phase-step.active .phase-circle {
+            border-color: var(--cyan);
+            color: var(--cyan);
+            box-shadow: 0 0 10px var(--cyan-glow);
+            animation: pulseCyanBorder 1.5s infinite alternate;
+        }
+
+        .phase-step.active .phase-label {
+            color: var(--cyan);
+        }
+
+        .phase-step.completed .phase-circle {
+            border-color: var(--green);
+            color: var(--green);
+            background: var(--green-glow);
+        }
+
+        .phase-step.completed .phase-label {
+            color: var(--text-main);
+        }
+
+        @keyframes pulseCyanBorder {
+            0% { border-color: rgba(76, 201, 240, 0.4); box-shadow: 0 0 4px rgba(76, 201, 240, 0.2); }
+            100% { border-color: rgba(76, 201, 240, 1); box-shadow: 0 0 12px rgba(76, 201, 240, 0.6); }
+        }
+
+        /* Results Panels Layout */
+        .results-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 1.5rem;
+        }
+
+        .results-fullwidth {
+            grid-column: 1 / span 2;
+        }
+
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 1.75rem;
+            backdrop-filter: blur(16px);
+            display: flex;
+            flex-direction: column;
+            gap: 1.25rem;
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 0.75rem;
+        }
+
+        .card-title {
+            font-family: 'Outfit', sans-serif;
+            font-size: 1.15rem;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: var(--text-main);
+        }
+
+        .card-title i {
+            color: var(--cyan);
+        }
+
+        .card-meta {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        /* Tech Badges Grid */
+        .tech-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+            gap: 1rem;
+        }
+
+        .tech-card {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            transition: all 0.2s;
+        }
+
+        .tech-card:hover {
+            border-color: var(--border-hover);
+            background: rgba(255, 255, 255, 0.04);
+            transform: translateY(-2px);
+        }
+
+        .tech-icon-wrapper {
+            width: 40px;
+            height: 40px;
+            border-radius: 8px;
+            background: rgba(157, 78, 221, 0.1);
+            border: 1px solid rgba(157, 78, 221, 0.2);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.25rem;
+            color: var(--primary);
+        }
+
+        .tech-info {
+            display: flex;
+            flex-direction: column;
+            gap: 0.2rem;
+            min-width: 0;
+        }
+
+        .tech-name {
+            font-weight: 600;
+            font-size: 0.9rem;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .tech-cat {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            text-transform: capitalize;
+        }
+
+        .tech-ver {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.75rem;
+            background: rgba(255, 255, 255, 0.05);
+            color: var(--cyan);
+            padding: 0.05rem 0.3rem;
+            border-radius: 4px;
+            align-self: flex-start;
+            margin-top: 0.1rem;
+        }
+
+        /* Scrollable List and Table Layouts */
+        .table-container {
+            max-height: 350px;
+            overflow-y: auto;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+            text-align: left;
+        }
+
+        th {
+            background: rgba(10, 12, 22, 0.9);
+            color: var(--text-main);
+            font-weight: 600;
+            padding: 0.75rem 1rem;
+            border-bottom: 2px solid var(--border-color);
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        td {
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--border-color);
+            color: var(--text-muted);
+            vertical-align: middle;
+        }
+
+        tr:hover td {
+            background: rgba(255, 255, 255, 0.015);
+            color: var(--text-main);
+        }
+
+        .badge-status {
+            font-size: 0.75rem;
+            padding: 0.15rem 0.4rem;
+            border-radius: 4px;
+            font-weight: bold;
+        }
+
+        .badge-status-2xx { background: rgba(16, 185, 129, 0.1); color: var(--green); border: 1px solid rgba(16, 185, 129, 0.3); }
+        .badge-status-3xx { background: rgba(59, 130, 246, 0.1); color: #3b82f6; border: 1px solid rgba(59, 130, 246, 0.3); }
+        .badge-status-4xx { background: rgba(245, 158, 11, 0.1); color: var(--yellow); border: 1px solid rgba(245, 158, 11, 0.3); }
+        .badge-status-5xx { background: rgba(244, 63, 94, 0.1); color: var(--red); border: 1px solid rgba(244, 63, 94, 0.3); }
+
+        /* API Endpoint layout */
+        .endpoints-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            max-height: 350px;
+            overflow-y: auto;
+            padding-right: 0.25rem;
+        }
+
+        .endpoint-row {
+            background: rgba(255, 255, 255, 0.015);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 0.75rem 1rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+        }
+
+        .endpoint-left {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            min-width: 0;
+        }
+
+        .method-badge {
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+            font-size: 0.75rem;
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            min-width: 60px;
+            text-align: center;
+        }
+
+        .method-get { background: rgba(59, 130, 246, 0.1); color: #3b82f6; border: 1px solid rgba(59, 130, 246, 0.3); }
+        .method-post { background: rgba(16, 185, 129, 0.1); color: var(--green); border: 1px solid rgba(16, 185, 129, 0.3); }
+        .method-put { background: rgba(245, 158, 11, 0.1); color: var(--yellow); border: 1px solid rgba(245, 158, 11, 0.3); }
+        .method-delete { background: rgba(244, 63, 94, 0.1); color: var(--red); border: 1px solid rgba(244, 63, 94, 0.3); }
+
+        .endpoint-url {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.8rem;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .endpoint-right {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            white-space: nowrap;
+        }
+
+        /* Dependency / Subdomains cards */
+        .dep-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            max-height: 350px;
+            overflow-y: auto;
+        }
+
+        .dep-row {
+            padding: 0.65rem 0.9rem;
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.01);
+            border: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.85rem;
+        }
+
+        .dep-domain {
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 500;
+        }
+
+        .dep-cat {
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            background: rgba(255, 255, 255, 0.05);
+            padding: 0.15rem 0.4rem;
+            border-radius: 4px;
+        }
+
+        .no-data {
+            text-align: center;
+            color: var(--text-dim);
+            font-size: 0.85rem;
+            padding: 2rem;
+            border: 1px dashed var(--border-color);
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .no-data i {
+            font-size: 1.5rem;
+        }
+
+        /* Metadata footer panel */
+        .metadata-footer {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1rem;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 1rem;
+            text-align: center;
+        }
+
+        .meta-stat {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+
+        .meta-value {
+            font-family: 'Outfit', sans-serif;
+            font-weight: 700;
+            font-size: 1.1rem;
+            color: var(--cyan);
+        }
+
+        .meta-label {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-dim);
+        }
+
+        /* Responsive Utilities */
+        @media (max-width: 1200px) {
+            .results-grid {
+                grid-template-columns: 1fr;
+            }
+            .results-fullwidth {
+                grid-column: 1;
+            }
+        }
+
+        @media (max-width: 900px) {
+            .main-container {
+                grid-template-columns: 1fr;
+            }
+            .sidebar {
+                border-right: none;
+                border-bottom: 1px solid var(--border-color);
+                max-height: 250px;
+            }
+            .workspace {
+                max-height: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="ambient-blur-1"></div>
+    <div class="ambient-blur-2"></div>
+
+    <header>
+        <div class="logo-container">
+            <i class="fa-solid fa-radar logo-icon"></i>
+            <span class="logo-text">stacksniff</span>
+            <span class="logo-badge">REST API UI</span>
+        </div>
+        <div class="header-meta">
+            <span class="status-dot"></span>
+            <span>Local API Connected</span>
+        </div>
+    </header>
+
+    <div class="main-container">
+        <!-- History / Recent Scans Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-title">
+                <span>Recent Scans</span>
+                <i class="fa-solid fa-clock-rotate-left"></i>
+            </div>
+            <div class="history-list" id="historyList">
+                <!-- Populated dynamically -->
+                <div class="no-data">
+                    <i class="fa-solid fa-spinner fa-spin"></i>
+                    <span>Loading history...</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Scanning Workspace -->
+        <main class="workspace">
+            <!-- Scan Submission Controls -->
+            <section class="controls-panel">
+                <form class="scan-form" id="scanForm">
+                    <div class="input-group">
+                        <label class="input-label" for="urlInput">Target Domain / URL</label>
+                        <div class="url-input-wrapper">
+                            <i class="fa-solid fa-globe url-input-icon"></i>
+                            <input class="url-input" type="url" id="urlInput" placeholder="https://example.com" required>
+                        </div>
+                    </div>
+                    <button class="btn-scan" type="submit" id="btnScan">
+                        <i class="fa-solid fa-magnifying-glass"></i>
+                        <span>Scan Domain</span>
+                    </button>
+
+                    <!-- Scan Settings & Options -->
+                    <div class="options-row" style="flex-wrap: wrap; gap: 1.5rem;">
+                        <label class="checkbox-container">
+                            <input type="checkbox" id="browserCheckbox" checked>
+                            <div class="checkbox-custom"></div>
+                            <span>Enable Playwright (Browser)</span>
+                        </label>
+                        <label class="checkbox-container">
+                            <input type="checkbox" id="forceRescanCheckbox">
+                            <div class="checkbox-custom"></div>
+                            <span>Force Rescan (Bypass Cache)</span>
+                        </label>
+                        <label class="checkbox-container">
+                            <input type="checkbox" id="scanTechCheckbox" checked>
+                            <div class="checkbox-custom"></div>
+                            <span>Scan Tech Stack</span>
+                        </label>
+                        <label class="checkbox-container">
+                            <input type="checkbox" id="scanSubdomainsCheckbox" checked>
+                            <div class="checkbox-custom"></div>
+                            <span>Scan Subdomains</span>
+                        </label>
+                        <label class="checkbox-container">
+                            <input type="checkbox" id="scanEndpointsCheckbox" checked>
+                            <div class="checkbox-custom"></div>
+                            <span>Scan API Endpoints</span>
+                        </label>
+                        <div class="range-container">
+                            <span>Timeout (secs):</span>
+                            <input class="range-input" type="range" id="timeoutRange" min="10" max="120" value="30">
+                            <span id="timeoutVal" style="font-family: 'JetBrains Mono', monospace; font-weight: bold; color: var(--text-main);">30s</span>
+                        </div>
+                    </div>
+                </form>
+            </section>
+
+            <!-- Dashboard Outputs (Dynamic content) -->
+            <section class="dashboard-view" id="dashboardView">
+                <!-- Default state empty message -->
+                <div class="no-data" style="padding: 5rem 0;" id="emptyDashboard">
+                    <i class="fa-solid fa-radar fa-pulse" style="font-size: 3rem; color: var(--primary); margin-bottom: 1rem;"></i>
+                    <h3 style="font-family: 'Outfit', sans-serif; font-size: 1.5rem; margin-bottom: 0.5rem; color: var(--text-main);">Ready to Scan</h3>
+                    <p style="color: var(--text-muted); max-width: 400px; text-align: center; font-size: 0.95rem;">Enter a URL above to profile its technologies, subdomains, external dependencies, and API endpoints.</p>
+                </div>
+
+                <!-- Live Status card (hidden by default) -->
+                <div class="status-card" id="statusCard" style="display: none;">
+                    <div class="status-info">
+                        <div class="status-url" id="statusUrl">https://iifon.org</div>
+                        <div class="status-row">
+                            <span class="badge" id="statusBadge">running</span>
+                            <span class="status-message" id="statusMessage">Scanning HTTP headers & html...</span>
+                        </div>
+                        
+                        <!-- Phase Tracker -->
+                        <div class="phases-tracker">
+                            <div class="phase-step" id="phaseHttp">
+                                <div class="phase-circle">1</div>
+                                <div class="phase-label">HTTP</div>
+                            </div>
+                            <div class="phase-step" id="phaseBrowser">
+                                <div class="phase-circle">2</div>
+                                <div class="phase-label">Browser</div>
+                            </div>
+                            <div class="phase-step" id="phaseProbes">
+                                <div class="phase-circle">3</div>
+                                <div class="phase-label">Probing</div>
+                            </div>
+                            <div class="phase-step" id="phaseComplete">
+                                <div class="phase-circle"><i class="fa-solid fa-check"></i></div>
+                                <div class="phase-label">Finished</div>
+                            </div>
+                        </div>
+                    </div>
+                    <button class="cancel-scan-btn" id="btnCancelScan">
+                        <i class="fa-solid fa-circle-stop"></i>
+                        <span>Cancel Scan</span>
+                    </button>
+                </div>
+
+                <!-- Tabs Container -->
+                <div class="tabs-container" id="tabsContainer" style="display: none; margin-bottom: 1.5rem; gap: 1rem; border-bottom: 1px solid var(--border-color); padding-bottom: 0.5rem;">
+                    <button class="tab-btn active" id="tabVisual" style="background: transparent; border: none; color: var(--text-main); font-family: inherit; font-size: 0.95rem; font-weight: 600; padding: 0.5rem 1rem; cursor: pointer; border-bottom: 2px solid var(--primary); transition: all 0.2s;">
+                        <i class="fa-solid fa-chart-line" style="margin-right: 0.5rem;"></i>Visual Report
+                    </button>
+                    <button class="tab-btn" id="tabRawJson" style="background: transparent; border: none; color: var(--text-muted); font-family: inherit; font-size: 0.95rem; font-weight: 600; padding: 0.5rem 1rem; cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.2s;">
+                        <i class="fa-solid fa-code" style="margin-right: 0.5rem;"></i>Raw API Response
+                    </button>
+                </div>
+
+                <!-- Results Grid (hidden by default) -->
+                <div class="results-grid" id="resultsGrid" style="display: none;">
+                    
+                    <!-- Technologies Found -->
+                    <div class="card results-fullwidth">
+                        <div class="card-header">
+                            <div class="card-title">
+                                <i class="fa-solid fa-layer-group"></i>
+                                <span>Technologies Detected</span>
+                            </div>
+                            <div class="card-meta" id="techCount">0 matches</div>
+                        </div>
+                        <div class="tech-grid" id="techGrid">
+                            <!-- Populated dynamically -->
+                        </div>
+                    </div>
+
+                    <!-- Subdomains Discovered -->
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title">
+                                <i class="fa-solid fa-sitemap"></i>
+                                <span>Subdomains</span>
+                            </div>
+                            <div class="card-meta" id="subdomainCount">0 subdomains</div>
+                        </div>
+                        <div class="table-container">
+                            <table id="subdomainsTable">
+                                <thead>
+                                    <tr>
+                                        <th>Subdomain</th>
+                                        <th>HTTP Status</th>
+                                        <th>Stack</th>
+                                        <th>Source</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="subdomainsBody">
+                                    <!-- Populated dynamically -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- External Dependencies -->
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title">
+                                <i class="fa-solid fa-arrow-up-right-from-square"></i>
+                                <span>External Dependencies</span>
+                            </div>
+                            <div class="card-meta" id="depCount">0 domains</div>
+                        </div>
+                        <div class="dep-list" id="depList">
+                            <!-- Populated dynamically -->
+                        </div>
+                    </div>
+
+                    <!-- API Endpoints -->
+                    <div class="card results-fullwidth">
+                        <div class="card-header">
+                            <div class="card-title">
+                                <i class="fa-solid fa-network-wired"></i>
+                                <span>Discovered API Endpoints</span>
+                            </div>
+                            <div class="card-meta" id="endpointCount">0 endpoints</div>
+                        </div>
+                        <div class="endpoints-list" id="endpointsList">
+                            <!-- Populated dynamically -->
+                        </div>
+                    </div>
+
+                    <!-- Summary Stats Footer -->
+                    <div class="metadata-footer results-fullwidth">
+                        <div class="meta-stat">
+                            <span class="meta-value" id="statDuration">-</span>
+                            <span class="meta-label">Duration</span>
+                        </div>
+                        <div class="meta-stat">
+                            <span class="meta-value" id="statRules">-</span>
+                            <span class="meta-label">Rules Run</span>
+                        </div>
+                        <div class="meta-stat">
+                            <span class="meta-value" id="statSpec">-</span>
+                            <span class="meta-label">OpenAPI Spec</span>
+                        </div>
+                        <div class="meta-stat">
+                            <span class="meta-value" id="statPhases">-</span>
+                            <span class="meta-label">Phases Completed</span>
+                        </div>
+                    </div>
+
+                </div>
+
+                <!-- Raw JSON View (hidden by default) -->
+                <div class="card results-fullwidth" id="rawJsonView" style="display: none; margin-top: 1rem;">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <i class="fa-solid fa-code"></i>
+                            <span>Raw API Query & Response</span>
+                        </div>
+                        <button class="copy-json-btn" id="btnCopyJson" style="background: var(--primary-glow); border: 1px solid var(--primary); color: white; border-radius: 6px; padding: 0.4rem 0.8rem; font-size: 0.8rem; cursor: pointer; font-weight: 600; display: flex; align-items: center; gap: 0.5rem; transition: all 0.2s;">
+                            <i class="fa-solid fa-copy"></i>
+                            <span>Copy JSON</span>
+                        </button>
+                    </div>
+                    
+                    <div style="display: flex; flex-direction: column; gap: 1rem;">
+                        <div>
+                            <div class="input-label" style="margin-bottom: 0.25rem;">HTTP Query Method & URL</div>
+                            <div style="background: rgba(10, 12, 22, 0.8); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem 1rem; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; color: var(--cyan);">
+                                <span style="font-weight: bold; color: var(--green);">GET</span> <span id="rawRequestUrl">/api/scans/{id}/</span>
+                            </div>
+                        </div>
+                        <div>
+                            <div class="input-label" style="margin-bottom: 0.25rem;">JSON Response Payload</div>
+                            <pre style="background: rgba(10, 12, 22, 0.8); border: 1px solid var(--border-color); border-radius: 8px; padding: 1.25rem; max-height: 600px; overflow-y: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; color: #a5d6ff; line-height: 1.4; white-space: pre-wrap;"><code id="rawResponseCode">{}</code></pre>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script>
+        const API_BASE = '/api/scans';
+        let activeJobId = null;
+        let pollInterval = null;
+
+        // UI elements
+        const scanForm = document.getElementById('scanForm');
+        const urlInput = document.getElementById('urlInput');
+        const browserCheckbox = document.getElementById('browserCheckbox');
+        const forceRescanCheckbox = document.getElementById('forceRescanCheckbox');
+        const scanTechCheckbox = document.getElementById('scanTechCheckbox');
+        const scanSubdomainsCheckbox = document.getElementById('scanSubdomainsCheckbox');
+        const scanEndpointsCheckbox = document.getElementById('scanEndpointsCheckbox');
+        const timeoutRange = document.getElementById('timeoutRange');
+        const timeoutVal = document.getElementById('timeoutVal');
+        const btnScan = document.getElementById('btnScan');
+        
+        const historyList = document.getElementById('historyList');
+        const emptyDashboard = document.getElementById('emptyDashboard');
+        const statusCard = document.getElementById('statusCard');
+        const statusUrl = document.getElementById('statusUrl');
+        const statusBadge = document.getElementById('statusBadge');
+        const statusMessage = document.getElementById('statusMessage');
+        const btnCancelScan = document.getElementById('btnCancelScan');
+        const resultsGrid = document.getElementById('resultsGrid');
+
+        const tabsContainer = document.getElementById('tabsContainer');
+        const tabVisual = document.getElementById('tabVisual');
+        const tabRawJson = document.getElementById('tabRawJson');
+        const rawJsonView = document.getElementById('rawJsonView');
+        const rawRequestUrl = document.getElementById('rawRequestUrl');
+        const rawResponseCode = document.getElementById('rawResponseCode');
+        const btnCopyJson = document.getElementById('btnCopyJson');
+        
+        let latestJobData = null;
+
+        // Phase indicators
+        const phaseHttp = document.getElementById('phaseHttp');
+        const phaseBrowser = document.getElementById('phaseBrowser');
+        const phaseProbes = document.getElementById('phaseProbes');
+        const phaseComplete = document.getElementById('phaseComplete');
+
+        // Results elements
+        const techGrid = document.getElementById('techGrid');
+        const techCount = document.getElementById('techCount');
+        const subdomainsBody = document.getElementById('subdomainsBody');
+        const subdomainCount = document.getElementById('subdomainCount');
+        const depList = document.getElementById('depList');
+        const depCount = document.getElementById('depCount');
+        const endpointsList = document.getElementById('endpointsList');
+        const endpointCount = document.getElementById('endpointCount');
+
+        // Stats elements
+        const statDuration = document.getElementById('statDuration');
+        const statRules = document.getElementById('statRules');
+        const statSpec = document.getElementById('statSpec');
+        const statPhases = document.getElementById('statPhases');
+
+        // Handle range slider text
+        timeoutRange.addEventListener('input', (e) => {
+            timeoutVal.innerText = `${e.target.value}s`;
+        });
+
+        // Tab switching logic
+        tabVisual.addEventListener('click', () => {
+            tabVisual.classList.add('active');
+            tabVisual.style.borderBottomColor = 'var(--primary)';
+            tabVisual.style.color = 'var(--text-main)';
+            
+            tabRawJson.classList.remove('active');
+            tabRawJson.style.borderBottomColor = 'transparent';
+            tabRawJson.style.color = 'var(--text-muted)';
+            
+            if (activeJobId) {
+                resultsGrid.style.display = 'grid';
+                rawJsonView.style.display = 'none';
+            }
+        });
+
+        tabRawJson.addEventListener('click', () => {
+            tabRawJson.classList.add('active');
+            tabRawJson.style.borderBottomColor = 'var(--primary)';
+            tabRawJson.style.color = 'var(--text-main)';
+            
+            tabVisual.classList.remove('active');
+            tabVisual.style.borderBottomColor = 'transparent';
+            tabVisual.style.color = 'var(--text-muted)';
+            
+            if (activeJobId) {
+                resultsGrid.style.display = 'none';
+                rawJsonView.style.display = 'block';
+            }
+        });
+
+        // Copy raw JSON logic
+        btnCopyJson.addEventListener('click', () => {
+            if (!latestJobData) return;
+            const jsonText = JSON.stringify(latestJobData, null, 2);
+            navigator.clipboard.writeText(jsonText).then(() => {
+                const btnText = btnCopyJson.querySelector('span');
+                const btnIcon = btnCopyJson.querySelector('i');
+                const oldText = btnText.innerText;
+                
+                btnText.innerText = 'Copied!';
+                btnIcon.className = 'fa-solid fa-check';
+                setTimeout(() => {
+                    btnText.innerText = oldText;
+                    btnIcon.className = 'fa-solid fa-copy';
+                }, 1500);
+            }).catch(err => {
+                console.error('Failed to copy text: ', err);
+            });
+        });
+
+        // Initialize UI
+        document.addEventListener('DOMContentLoaded', () => {
+            fetchHistory();
+        });
+
+        // Fetch scan history list
+        async function fetchHistory() {
+            try {
+                const res = await fetch(`${API_BASE}/`);
+                if (!res.ok) throw new Error('Failed to fetch history');
+                const data = await res.json();
+                renderHistory(data.results);
+            } catch (err) {
+                console.error(err);
+                historyList.innerHTML = `
+                    <div class="no-data" style="color: var(--red);">
+                        <i class="fa-solid fa-circle-exclamation"></i>
+                        <span>Error loading scans</span>
+                    </div>
+                `;
+            }
+        }
+
+        // Render history items in sidebar
+        function renderHistory(jobs) {
+            if (!jobs || jobs.length === 0) {
+                historyList.innerHTML = `
+                    <div class="no-data">
+                        <i class="fa-solid fa-circle-info"></i>
+                        <span>No scans performed yet</span>
+                    </div>
+                `;
+                return;
+            }
+
+            historyList.innerHTML = '';
+            jobs.forEach(job => {
+                const item = document.createElement('div');
+                item.className = `history-item ${activeJobId === job.id ? 'active' : ''}`;
+                item.setAttribute('data-id', job.id);
+                
+                const timeStr = job.completed_at 
+                    ? new Date(job.completed_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                    : new Date(job.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+                item.innerHTML = `
+                    <div class="history-url" title="${job.url}">${job.url}</div>
+                    <div class="history-meta">
+                        <span class="badge badge-${job.status}">${job.status}</span>
+                        <span>${timeStr}</span>
+                    </div>
+                `;
+
+                item.addEventListener('click', () => selectJob(job.id));
+                historyList.appendChild(item);
+            });
+        }
+
+        // Select and load a job's details
+        async function selectJob(jobId) {
+            if (pollInterval) {
+                clearInterval(pollInterval);
+                pollInterval = null;
+            }
+
+            activeJobId = jobId;
+            
+            // Highlight in list
+            document.querySelectorAll('.history-item').forEach(el => {
+                if (el.getAttribute('data-id') === jobId) {
+                    el.classList.add('active');
+                } else {
+                    el.classList.remove('active');
+                }
+            });
+
+            // Fetch details
+            showLoadingState();
+            await pollJobStatus(jobId, true);
+        }
+
+        scanForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const url = urlInput.value.trim();
+            const browser = browserCheckbox.checked;
+            const force_rescan = forceRescanCheckbox.checked;
+            const timeout = parseFloat(timeoutRange.value);
+            const scan_technologies = scanTechCheckbox.checked;
+            const scan_subdomains = scanSubdomainsCheckbox.checked;
+            const scan_endpoints = scanEndpointsCheckbox.checked;
+
+            btnScan.disabled = true;
+            btnScan.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> <span>Submitting...</span>`;
+
+            try {
+                const res = await fetch(`${API_BASE}/`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        url,
+                        browser,
+                        timeout,
+                        force_rescan,
+                        scan_technologies,
+                        scan_subdomains,
+                        scan_endpoints
+                    })
+                });
+
+                if (!res.ok) {
+                    const errData = await res.json();
+                    throw new Error(errData.url ? errData.url[0] : 'Failed to start scan');
+                }
+
+                const newJob = await res.json();
+                activeJobId = newJob.id;
+                
+                // Refresh history list and highlight new job
+                await fetchHistory();
+                
+                // Show tracking view
+                emptyDashboard.style.display = 'none';
+                statusCard.style.display = 'flex';
+                resultsGrid.style.display = 'none';
+                
+                statusUrl.innerText = newJob.url;
+                updateStatusUI(newJob);
+
+                // Start polling
+                startPolling(newJob.id);
+
+            } catch (err) {
+                alert(`Error: ${err.message}`);
+            } finally {
+                btnScan.disabled = false;
+                btnScan.innerHTML = `<i class="fa-solid fa-magnifying-glass"></i> <span>Scan Domain</span>`;
+            }
+        });
+
+        // Cancel an active scan job
+        btnCancelScan.addEventListener('click', async () => {
+            if (!activeJobId) return;
+            if (!confirm('Are you sure you want to cancel and delete this scan job?')) return;
+
+            btnCancelScan.disabled = true;
+            btnCancelScan.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> <span>Cancelling...</span>`;
+
+            try {
+                const res = await fetch(`${API_BASE}/${activeJobId}/`, {
+                    method: 'DELETE'
+                });
+
+                if (res.status === 204) {
+                    // Success
+                    if (pollInterval) {
+                        clearInterval(pollInterval);
+                        pollInterval = null;
+                    }
+                    activeJobId = null;
+                    statusCard.style.display = 'none';
+                    resultsGrid.style.display = 'none';
+                    emptyDashboard.style.display = 'flex';
+                    
+                    await fetchHistory();
+                } else {
+                    throw new Error('Failed to cancel scan');
+                }
+            } catch (err) {
+                alert(`Cancel failed: ${err.message}`);
+            } finally {
+                btnCancelScan.disabled = false;
+                btnCancelScan.innerHTML = `<i class="fa-solid fa-circle-stop"></i> <span>Cancel Scan</span>`;
+            }
+        });
+
+        // Polling management
+        function startPolling(jobId) {
+            if (pollInterval) clearInterval(pollInterval);
+            
+            // Poll immediately once, then set interval
+            pollJobStatus(jobId);
+            pollInterval = setInterval(() => pollJobStatus(jobId), 2500);
+        }
+
+        async function pollJobStatus(jobId, forceDetailsRender = false) {
+            try {
+                const res = await fetch(`${API_BASE}/${jobId}/`);
+                if (!res.ok) throw new Error('Failed to fetch job details');
+                const job = await res.json();
+                
+                // Safety check to prevent overlap of asynchronous fetch requests
+                if (activeJobId !== jobId) return;
+
+                updateStatusUI(job);
+
+                if (job.status === 'completed') {
+                    if (pollInterval) {
+                        clearInterval(pollInterval);
+                        pollInterval = null;
+                    }
+                    statusCard.style.display = 'none';
+                    
+                    // Inject raw response data
+                    latestJobData = job;
+                    rawRequestUrl.innerText = `${API_BASE}/${jobId}/`;
+                    rawResponseCode.innerText = JSON.stringify(job, null, 2);
+                    tabsContainer.style.display = 'flex';
+                    
+                    if (tabRawJson.classList.contains('active')) {
+                        resultsGrid.style.display = 'none';
+                        rawJsonView.style.display = 'block';
+                    } else {
+                        resultsGrid.style.display = 'grid';
+                        rawJsonView.style.display = 'none';
+                    }
+                    
+                    renderResults(job.result);
+                    // Update sidebar history in case it changed status
+                    fetchHistory();
+                } else if (job.status === 'failed') {
+                    if (pollInterval) {
+                        clearInterval(pollInterval);
+                        pollInterval = null;
+                    }
+                    statusCard.style.display = 'flex';
+                    resultsGrid.style.display = 'none';
+                    rawJsonView.style.display = 'none';
+                    tabsContainer.style.display = 'none';
+                    
+                    // Update error state UI
+                    statusBadge.className = 'badge badge-failed';
+                    statusBadge.innerText = 'failed';
+                    statusMessage.innerHTML = `<strong style="color: var(--red)">Error:</strong> ${job.error_message || 'Unknown scan error'}`;
+                    
+                    // Disable cancel button, it failed already
+                    btnCancelScan.style.display = 'none';
+                    
+                    fetchHistory();
+                } else {
+                    // pending or running
+                    statusCard.style.display = 'flex';
+                    resultsGrid.style.display = 'none';
+                    rawJsonView.style.display = 'none';
+                    tabsContainer.style.display = 'none';
+                    btnCancelScan.style.display = 'flex';
+                }
+
+            } catch (err) {
+                console.error(err);
+                if (pollInterval) {
+                    clearInterval(pollInterval);
+                    pollInterval = null;
+                }
+            }
+        }
+
+        // Show a general loading visual state in results grid
+        function showLoadingState() {
+            emptyDashboard.style.display = 'none';
+            statusCard.style.display = 'flex';
+            resultsGrid.style.display = 'none';
+            rawJsonView.style.display = 'none';
+            tabsContainer.style.display = 'none';
+
+            statusBadge.className = 'badge badge-running';
+            statusBadge.innerText = 'loading';
+            statusMessage.innerText = 'Fetching job data...';
+            btnCancelScan.style.display = 'none';
+            
+            // Reset phases tracker state
+            resetPhaseTracker();
+        }
+
+        function resetPhaseTracker() {
+            phaseHttp.className = 'phase-step';
+            phaseBrowser.className = 'phase-step';
+            phaseProbes.className = 'phase-step';
+            phaseComplete.className = 'phase-step';
+            
+            // Restore default displays
+            phaseBrowser.style.display = 'flex';
+            phaseProbes.style.display = 'flex';
+        }
+
+        // Update tracking status indicator UI
+        function updateStatusUI(job) {
+            statusUrl.innerText = job.url;
+            statusBadge.innerText = job.status;
+            statusBadge.className = `badge badge-${job.status}`;
+            
+            resetPhaseTracker();
+
+            const runBrowser = !job.options || job.options.browser !== false;
+            const runProbing = !job.options || (job.options.scan_subdomains !== false || job.options.scan_endpoints !== false);
+
+            if (!runBrowser) {
+                phaseBrowser.style.display = 'none';
+            }
+            if (!runProbing) {
+                phaseProbes.style.display = 'none';
+            }
+
+            if (job.status === 'pending') {
+                statusMessage.innerText = 'Waiting in Celery queue...';
+            } else if (job.status === 'running') {
+                statusMessage.innerText = 'Analyzing site architecture & scanning headers...';
+                phaseHttp.className = 'phase-step active';
+                
+                if (runBrowser) {
+                    const elapsed = (new Date() - new Date(job.started_at)) / 1000;
+                    if (elapsed > 12) {
+                        phaseHttp.className = 'phase-step completed';
+                        phaseBrowser.className = 'phase-step active';
+                    }
+                    if (runProbing && elapsed > 32) {
+                        phaseBrowser.className = 'phase-step completed';
+                        phaseProbes.className = 'phase-step active';
+                    }
+                } else {
+                    const elapsed = (new Date() - new Date(job.started_at)) / 1000;
+                    if (runProbing && elapsed > 10) {
+                        phaseHttp.className = 'phase-step completed';
+                        phaseProbes.className = 'phase-step active';
+                    }
+                }
+            } else if (job.status === 'completed') {
+                statusMessage.innerText = 'Scan finished successfully!';
+                phaseHttp.className = 'phase-step completed';
+                if (runBrowser) {
+                    phaseBrowser.className = 'phase-step completed';
+                }
+                if (runProbing) {
+                    phaseProbes.className = 'phase-step completed';
+                }
+                phaseComplete.className = 'phase-step completed';
+            }
+        }
+
+        // Render full ScanResult details
+        function renderResults(result) {
+            if (!result) return;
+
+            // 1. Technologies
+            techCount.innerText = `${result.technologies.length} matches`;
+            if (result.technologies.length === 0) {
+                techGrid.innerHTML = `
+                    <div class="no-data" style="grid-column: 1 / -1;">
+                        <i class="fa-solid fa-ghost"></i>
+                        <span>No technologies identified</span>
+                    </div>
+                `;
+            } else {
+                techGrid.innerHTML = '';
+                result.technologies.forEach(tech => {
+                    const card = document.createElement('div');
+                    card.className = 'tech-card';
+                    
+                    // Render custom brand/tech badges
+                    let iconHtml = '<i class="fa-solid fa-code"></i>';
+                    if (tech.category.includes('server') || tech.category.includes('hosting')) {
+                        iconHtml = '<i class="fa-solid fa-server"></i>';
+                    } else if (tech.category.includes('cms') || tech.category.includes('builder')) {
+                        iconHtml = '<i class="fa-solid fa-wordpress"></i>';
+                    } else if (tech.category.includes('security') || tech.category.includes('captcha')) {
+                        iconHtml = '<i class="fa-solid fa-shield-halved"></i>';
+                    } else if (tech.category.includes('cdn')) {
+                        iconHtml = '<i class="fa-solid fa-cloud-arrow-up"></i>';
+                    } else if (tech.category.includes('database')) {
+                        iconHtml = '<i class="fa-solid fa-database"></i>';
+                    } else if (tech.category.includes('analytics') || tech.category.includes('tracking')) {
+                        iconHtml = '<i class="fa-solid fa-chart-line"></i>';
+                    }
+                    
+                    card.innerHTML = `
+                        <div class="tech-icon-wrapper">
+                            ${iconHtml}
+                        </div>
+                        <div class="tech-info">
+                            <span class="tech-name" title="${tech.name}">${tech.name}</span>
+                            <span class="tech-cat">${tech.category.replace(/-/g, ' ')}</span>
+                            ${tech.version ? `<span class="tech-ver">${tech.version}</span>` : ''}
+                        </div>
+                    `;
+                    techGrid.appendChild(card);
+                });
+            }
+
+            // 2. Subdomains
+            subdomainCount.innerText = `${result.discovered_subdomains.length} subdomains`;
+            if (result.discovered_subdomains.length === 0) {
+                subdomainsBody.innerHTML = `
+                    <tr>
+                        <td colspan="4" style="text-align: center; padding: 2rem;">
+                            <div class="no-data" style="border: none;">
+                                <i class="fa-solid fa-network-wired"></i>
+                                <span>No subdomains found</span>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            } else {
+                subdomainsBody.innerHTML = '';
+                result.discovered_subdomains.forEach(sub => {
+                    const row = document.createElement('tr');
+                    
+                    const statusVal = sub.status_code || '-';
+                    let statusBadgeClass = 'badge-status-2xx';
+                    if (statusVal !== '-') {
+                        const firstChar = String(statusVal).charAt(0);
+                        if (firstChar === '3') statusBadgeClass = 'badge-status-3xx';
+                        else if (firstChar === '4') statusBadgeClass = 'badge-status-4xx';
+                        else if (firstChar === '5') statusBadgeClass = 'badge-status-5xx';
+                    }
+
+                    const stack = sub.detected_tech || '<span style="color: var(--text-dim)">None</span>';
+                    const source = sub.ct_source || 'crt.sh';
+
+                    row.innerHTML = `
+                        <td class="dep-domain">${sub.subdomain}</td>
+                        <td><span class="badge-status ${statusBadgeClass}">${statusVal}</span></td>
+                        <td>${stack}</td>
+                        <td><span style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;">${source}</span></td>
+                    `;
+                    subdomainsBody.appendChild(row);
+                });
+            }
+
+            // 3. Dependencies
+            depCount.innerText = `${result.runtime_dependencies.length} domains`;
+            if (result.runtime_dependencies.length === 0) {
+                depList.innerHTML = `
+                    <div class="no-data">
+                        <i class="fa-solid fa-link-slash"></i>
+                        <span>No external dependencies detected</span>
+                    </div>
+                `;
+            } else {
+                depList.innerHTML = '';
+                result.runtime_dependencies.forEach(dep => {
+                    const row = document.createElement('div');
+                    row.className = 'dep-row';
+                    
+                    const name = dep.technology_name ? ` (${dep.technology_name})` : '';
+                    row.innerHTML = `
+                        <span class="dep-domain">${dep.domain}<span style="color: var(--primary); font-size: 0.75rem;">${name}</span></span>
+                        <span class="dep-cat">${dep.category.replace(/-/g, ' ')}</span>
+                    `;
+                    depList.appendChild(row);
+                });
+            }
+
+            // 4. API Endpoints
+            endpointCount.innerText = `${result.api_endpoints.length} endpoints`;
+            if (result.api_endpoints.length === 0) {
+                endpointsList.innerHTML = `
+                    <div class="no-data">
+                        <i class="fa-solid fa-link-slash"></i>
+                        <span>No API endpoints detected</span>
+                    </div>
+                `;
+            } else {
+                endpointsList.innerHTML = '';
+                result.api_endpoints.forEach(ep => {
+                    const row = document.createElement('div');
+                    row.className = 'endpoint-row';
+                    
+                    const method = ep.method ? ep.method.toUpperCase() : 'GET';
+                    const methodClass = `method-${method.toLowerCase()}`;
+
+                    row.innerHTML = `
+                        <div class="endpoint-left">
+                            <span class="method-badge ${methodClass}">${method}</span>
+                            <span class="endpoint-url" title="${ep.url}">${ep.url}</span>
+                        </div>
+                        <div class="endpoint-right">
+                            <span>Confidence: ${(ep.confidence * 100).toFixed(0)}%</span>
+                            ${ep.content_type ? `<span class="dep-cat">${ep.content_type}</span>` : ''}
+                        </div>
+                    `;
+                    endpointsList.appendChild(row);
+                });
+            }
+
+            // 5. Stats
+            statDuration.innerText = `${parseFloat(result.duration_seconds).toFixed(1)}s`;
+            statRules.innerText = result.rules_count || '-';
+            statSpec.innerText = result.openapi_spec_found ? 'FOUND' : 'NONE';
+            statPhases.innerText = result.phases_completed ? result.phases_completed.join(', ').toUpperCase() : '-';
+        }
+    </script>
+</body>
+</html>

@@ -62,12 +62,20 @@ class Scanner:
         progress_callback: Callable[[str, str], None] | None = None,
         crawl_depth: int = 1,
         cache_bypass: bool = False,
+        subdomains: bool = True,
+        framework_probe: bool = True,
+        scan_technologies: bool = True,
+        scan_endpoints: bool = True,
     ) -> ScanResult:
         """Scan a URL and return a structured ScanResult."""
         options = {
             "browser": browser,
             "crawl_depth": crawl_depth,
             "fingerprints_path": str(fingerprints_path) if fingerprints_path else None,
+            "scan_subdomains": subdomains,
+            "framework_probe": framework_probe,
+            "scan_technologies": scan_technologies,
+            "scan_endpoints": scan_endpoints,
         }
 
         from stacksniff.cache import get_cache
@@ -277,12 +285,19 @@ class Scanner:
             "network_requests": [req.url for req in evidence.network_requests],
         }
 
-        matcher = FingerprintMatcher(store)
-        tech_matches = matcher.match(evidence_dict)
+        if scan_technologies:
+            matcher = FingerprintMatcher(store)
+            tech_matches = matcher.match(evidence_dict)
+        else:
+            tech_matches = []
 
         # -------------------------------------------------------------------
         # Phase 3.5: SecLists-based framework path probing  +  Domain mapping
         # Run both concurrently.
+        # -------------------------------------------------------------------
+        # -------------------------------------------------------------------
+        # Phase 3.5: SecLists-based framework path probing  +  Domain mapping
+        # Run both concurrently if enabled.
         # -------------------------------------------------------------------
         if progress_callback:
             progress_callback("framework_probe", "started")
@@ -292,33 +307,40 @@ class Scanner:
         if browser and playwright_installed:
             har_entries = net_ok.data.get("har_entries", [])
 
-        prober = FrameworkProber(tech_matches, url, timeout=timeout)
-        domain_mapper = DomainMapper(
-            base_url=url,
-            har_entries=har_entries,
-            fingerprint_store=store,
-            timeout=timeout,
-        )
+        gather_tasks = []
+        if framework_probe and scan_endpoints:
+            prober = FrameworkProber(tech_matches, url, timeout=timeout)
+            gather_tasks.append(prober.collect())
+        if subdomains:
+            domain_mapper = DomainMapper(
+                base_url=url,
+                har_entries=har_entries,
+                fingerprint_store=store,
+                timeout=timeout,
+            )
+            gather_tasks.append(domain_mapper.collect())
 
-        probe_result_raw, domain_result_raw = await asyncio.gather(
-            prober.collect(),
-            domain_mapper.collect(),
-            return_exceptions=True,
-        )
+        probe_result = CollectorResult()
+        domain_result = CollectorResult()
 
-        if isinstance(probe_result_raw, CollectorResult):
-            probe_result = probe_result_raw
-        else:
-            if isinstance(probe_result_raw, BaseException):
-                logger.error("FrameworkProber raised: %s", probe_result_raw)
-            probe_result = CollectorResult()
-
-        if isinstance(domain_result_raw, CollectorResult):
-            domain_result = domain_result_raw
-        else:
-            if isinstance(domain_result_raw, BaseException):
-                logger.error("DomainMapper raised: %s", domain_result_raw)
-            domain_result = CollectorResult()
+        if gather_tasks:
+            raw_results = await asyncio.gather(*gather_tasks, return_exceptions=True)
+            idx = 0
+            if framework_probe and scan_endpoints:
+                probe_result_raw = raw_results[idx]
+                idx += 1
+                if isinstance(probe_result_raw, CollectorResult):
+                    probe_result = probe_result_raw
+                else:
+                    if isinstance(probe_result_raw, BaseException):
+                        logger.error("FrameworkProber raised: %s", probe_result_raw)
+            if subdomains:
+                domain_result_raw = raw_results[idx]
+                if isinstance(domain_result_raw, CollectorResult):
+                    domain_result = domain_result_raw
+                else:
+                    if isinstance(domain_result_raw, BaseException):
+                        logger.error("DomainMapper raised: %s", domain_result_raw)
 
         framework_endpoints = probe_result.data.get("framework_endpoints", [])
         evidence.framework_endpoints = framework_endpoints
@@ -328,8 +350,11 @@ class Scanner:
         if progress_callback:
             progress_callback("framework_probe", "completed")
 
-        detector = ApiDetector()
-        detected_endpoints = detector.detect(evidence)
+        if scan_endpoints:
+            detector = ApiDetector()
+            detected_endpoints = detector.detect(evidence)
+        else:
+            detected_endpoints = []
 
         # -------------------------------------------------------------------
         # Phase 4: Report assembly

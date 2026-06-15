@@ -71,9 +71,39 @@ class ScanJobAPITests(APITestCase):
         self.assertEqual(job.url, "https://newsite.com")
         self.assertEqual(job.options["browser"], True)
         self.assertEqual(job.options["timeout"], 20.0)
+        self.assertEqual(job.options["scan_technologies"], True)
+        self.assertEqual(job.options["scan_subdomains"], True)
+        self.assertEqual(job.options["scan_endpoints"], True)
 
         # Verify task was called with correct arguments
         mock_run_scan_delay.assert_called_once_with(str(job.id), force_rescan=True)
+
+    @patch("scanner.tasks.run_scan.delay")
+    def test_create_scan_job_with_custom_options(self, mock_run_scan_delay):
+        mock_task = MagicMock()
+        mock_task.id = "mock-task-uuid-456"
+        mock_run_scan_delay.return_value = mock_task
+
+        url = reverse("scan-list")
+        data = {
+            "url": "https://customoptions.com",
+            "browser": False,
+            "timeout": 15.0,
+            "scan_technologies": False,
+            "scan_subdomains": False,
+            "scan_endpoints": False,
+            "force_rescan": False,
+        }
+        response = self.client.post(url, data, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        job = ScanJob.objects.get(id=response.data["id"])
+        self.assertEqual(job.url, "https://customoptions.com")
+        self.assertEqual(job.options["browser"], False)
+        self.assertEqual(job.options["timeout"], 15.0)
+        self.assertEqual(job.options["scan_technologies"], False)
+        self.assertEqual(job.options["scan_subdomains"], False)
+        self.assertEqual(job.options["scan_endpoints"], False)
 
     def test_create_scan_job_invalid_url(self):
         url = reverse("scan-list")
@@ -166,6 +196,93 @@ class ScanJobAPITests(APITestCase):
         response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
+    @patch("scanner.tasks.run_scan.delay")
+    def test_shortcut_tech_sets_correct_flags(self, mock_run_scan_delay):
+        mock_task = MagicMock()
+        mock_task.id = "mock-task-uuid-tech"
+        mock_run_scan_delay.return_value = mock_task
+
+        url = "/api/scan/tech/"
+        data = {"url": "https://techonly.com"}
+        response = self.client.post(url, data, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        job = ScanJob.objects.get(id=response.data["id"])
+        self.assertEqual(job.options["scan_technologies"], True)
+        self.assertEqual(job.options["scan_subdomains"], False)
+        self.assertEqual(job.options["scan_endpoints"], False)
+        self.assertEqual(job.options["browser"], True)
+
+    @patch("scanner.tasks.run_scan.delay")
+    def test_shortcut_full_sets_all_flags_true(self, mock_run_scan_delay):
+        mock_task = MagicMock()
+        mock_task.id = "mock-task-uuid-full"
+        mock_run_scan_delay.return_value = mock_task
+
+        url = "/api/scan/full/"
+        data = {"url": "https://fullscan.com"}
+        response = self.client.post(url, data, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        job = ScanJob.objects.get(id=response.data["id"])
+        self.assertEqual(job.options["scan_technologies"], True)
+        self.assertEqual(job.options["scan_subdomains"], True)
+        self.assertEqual(job.options["scan_endpoints"], True)
+        self.assertEqual(job.options["browser"], True)
+
+    @patch("scanner.tasks.run_scan.delay")
+    def test_shortcut_endpoints_disables_tech_and_subdomains(self, mock_run_scan_delay):
+        mock_task = MagicMock()
+        mock_task.id = "mock-task-uuid-endpoints"
+        mock_run_scan_delay.return_value = mock_task
+
+        url = "/api/scan/endpoints/"
+        data = {"url": "https://endpoints-only.com"}
+        response = self.client.post(url, data, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        job = ScanJob.objects.get(id=response.data["id"])
+        self.assertEqual(job.options["scan_technologies"], False)
+        self.assertEqual(job.options["scan_subdomains"], False)
+        self.assertEqual(job.options["scan_endpoints"], True)
+        self.assertEqual(job.options["browser"], True)
+
+    @patch("scanner.tasks.run_scan.delay")
+    def test_shortcut_subdomains_disables_browser(self, mock_run_scan_delay):
+        mock_task = MagicMock()
+        mock_task.id = "mock-task-uuid-subs"
+        mock_run_scan_delay.return_value = mock_task
+
+        url = "/api/scan/subdomains/"
+        data = {"url": "https://subdomains-only.com"}
+        response = self.client.post(url, data, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        job = ScanJob.objects.get(id=response.data["id"])
+        self.assertEqual(job.options["scan_technologies"], False)
+        self.assertEqual(job.options["scan_subdomains"], True)
+        self.assertEqual(job.options["scan_endpoints"], False)
+        self.assertEqual(job.options["browser"], False)
+
+    @patch("scanner.tasks.run_scan.delay")
+    def test_shortcut_respects_force_rescan_override(self, mock_run_scan_delay):
+        mock_task = MagicMock()
+        mock_task.id = "mock-task-uuid-rescan"
+        mock_run_scan_delay.return_value = mock_task
+
+        url = "/api/scan/tech/"
+        data = {
+            "url": "https://techoverride.com",
+            "force_rescan": True,
+            "timeout": 45.0,
+        }
+        response = self.client.post(url, data, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        job = ScanJob.objects.get(id=response.data["id"])
+        self.assertEqual(job.options["timeout"], 45.0)
+        mock_run_scan_delay.assert_called_once_with(str(job.id), force_rescan=True)
+
 
 class ScanJobCeleryTaskTests(APITestCase):
     def setUp(self):
@@ -216,6 +333,15 @@ class ScanJobCeleryTaskTests(APITestCase):
         result = run_scan(str(self.job.id))
 
         self.assertEqual(result, "completed")
+        mock_scan.assert_called_once_with(
+            "https://celerytest.com",
+            browser=True,
+            timeout=30.0,
+            cache_bypass=False,
+            subdomains=True,
+            scan_technologies=True,
+            scan_endpoints=True,
+        )
 
         # Refresh from database
         self.job.refresh_from_db()
@@ -231,6 +357,7 @@ class ScanJobCeleryTaskTests(APITestCase):
         self.assertEqual(scan_res.api_endpoints[0]["url"], "https://celerytest.com/api")
         self.assertEqual(scan_res.runtime_dependencies[0]["domain"], "external.com")
         self.assertEqual(scan_res.discovered_subdomains[0]["domain"], "api.celerytest.com")
+        self.assertEqual(scan_res.fingerprints_version, "1.0")
 
     @patch("stacksniff.scanner.Scanner.scan", new_callable=AsyncMock)
     def test_run_scan_task_failure(self, mock_scan):
@@ -247,3 +374,29 @@ class ScanJobCeleryTaskTests(APITestCase):
         self.assertEqual(self.job.status, "failed")
         self.assertEqual(self.job.error_message, "Browser connection lost")
         self.assertIsNotNone(self.job.completed_at)
+
+    @patch("stacksniff.scanner.Scanner.scan", new_callable=AsyncMock)
+    def test_run_scan_task_custom_options(self, mock_scan):
+        mock_scan.return_value = self.mock_scan_result
+        custom_job = ScanJob.objects.create(
+            url="https://customcelery.com",
+            status="pending",
+            options={
+                "browser": False,
+                "timeout": 15.0,
+                "scan_technologies": False,
+                "scan_subdomains": False,
+                "scan_endpoints": False,
+            },
+        )
+        result = run_scan(str(custom_job.id))
+        self.assertEqual(result, "completed")
+        mock_scan.assert_called_once_with(
+            "https://customcelery.com",
+            browser=False,
+            timeout=15.0,
+            cache_bypass=False,
+            subdomains=False,
+            scan_technologies=False,
+            scan_endpoints=False,
+        )

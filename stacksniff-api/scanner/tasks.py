@@ -67,6 +67,9 @@ def run_scan(self, job_id: str, force_rescan: bool = False) -> str:
     options = job.options
     browser = options.get("browser", True)
     timeout = float(options.get("timeout", 30.0))
+    scan_technologies = options.get("scan_technologies", True)
+    scan_subdomains = options.get("scan_subdomains", True)
+    scan_endpoints = options.get("scan_endpoints", True)
 
     loop = get_background_loop()
 
@@ -80,13 +83,18 @@ def run_scan(self, job_id: str, force_rescan: bool = False) -> str:
             browser=browser,
             timeout=timeout,
             cache_bypass=force_rescan,
+            subdomains=scan_subdomains,
+            scan_technologies=scan_technologies,
+            scan_endpoints=scan_endpoints,
         )
 
     # Schedule the coroutine on the background event loop
     future = asyncio.run_coroutine_threadsafe(perform_scan(), loop)
 
-    # hard deadline of timeout + 60.0 to prevent cancelling before internal timeout fires
-    hard_timeout = timeout + 60.0
+    # Calculate a generous hard timeout to allow all sequential phases,
+    # retries, and browser tasks to finish. The total scan can take
+    # significantly longer than a single collector timeout.
+    hard_timeout = max(timeout * 5, 300.0)
 
     try:
         scan_result = future.result(timeout=hard_timeout)
@@ -112,6 +120,7 @@ def run_scan(self, job_id: str, force_rescan: bool = False) -> str:
             openapi_spec_found=scan_result.openapi_spec_found,
             phases_completed=scan_result.meta.phases_completed,
             rules_count=scan_result.meta.rules_count,
+            fingerprints_version=scan_result.meta.fingerprints_version,
         )
 
         return "completed"
@@ -121,6 +130,6 @@ def run_scan(self, job_id: str, force_rescan: bool = False) -> str:
         # Update ScanJob to failed
         job.status = "failed"
         job.completed_at = timezone.now()
-        job.error_message = str(e)
+        job.error_message = str(e) or e.__class__.__name__
         job.save()
         return "failed"

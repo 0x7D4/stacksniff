@@ -216,3 +216,36 @@ def test_scan_sync_wrapper(mock_collectors: dict[str, AsyncMock]) -> None:
             timeout=30.0,
             fingerprints_path=test_yaml,
         )
+
+
+@pytest.mark.asyncio
+async def test_scanner_subdomains_without_endpoints(mock_collectors: dict[str, AsyncMock]) -> None:
+    """Test scanner running with subdomains=True, but scan_endpoints=False.
+    This verifies that the indexing logic in the concurrent phase 3.5 doesn't
+    raise an IndexError when only one of the tasks is appended to gather_tasks.
+    """
+    test_yaml = Path(__file__).parents[1] / "fingerprints" / "tech.yaml"
+
+    with patch("stacksniff.scanner.DomainMapper") as mock_mapper:
+        mapper_instance = mock_mapper.return_value
+        mapper_instance.collect = AsyncMock(
+            return_value=CollectorResult(
+                data={
+                    "external_dependencies": [],
+                    "internal_subdomains": [],
+                }
+            )
+        )
+
+        scanner = Scanner(fingerprints_path=test_yaml)
+        result = await scanner.scan(
+            "https://example.com",
+            browser=False,
+            subdomains=True,
+            framework_probe=True,  # framework_probe is True, but scan_endpoints is False
+            scan_endpoints=False,
+        )
+
+        assert isinstance(result, ScanResult)
+        # Verify DomainMapper was called
+        mock_mapper.assert_called_once()

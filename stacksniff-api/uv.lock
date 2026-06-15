@@ -866,7 +866,7 @@ wheels = [
 [[package]]
 name = "stacksniff"
 version = "0.1.0"
-source = { directory = "C:/IIFON/stacksniff" }
+source = { editable = "../" }
 dependencies = [
     { name = "beautifulsoup4" },
     { name = "httpx" },
@@ -929,7 +929,7 @@ requires-dist = [
     { name = "pytest-django", marker = "extra == 'dev'", specifier = ">=4.8.0" },
     { name = "redis", specifier = ">=5.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.2.0" },
-    { name = "stacksniff", directory = "C:/IIFON/stacksniff" },
+    { name = "stacksniff", editable = "../" },
 ]
 provides-extras = ["dev"]
 

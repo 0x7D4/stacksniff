@@ -10,7 +10,7 @@ dependencies = [
     "django-cors-headers>=4.3.0",
     "celery[redis]>=5.3.0",
     "redis>=5.0.0",
-    "stacksniff @ file:///C:/IIFON/stacksniff",
+    "stacksniff",
 ]
 
 [project.optional-dependencies]
@@ -49,6 +49,9 @@ py-modules = []
 
 [tool.uv]
 package = false
+
+[tool.uv.sources]
+stacksniff = { path = "..", editable = true }
 
 
 

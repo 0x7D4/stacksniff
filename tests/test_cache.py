@@ -226,3 +226,40 @@ async def test_scanner_integration_with_caching(temp_cache_dir: Path) -> None:
         mock_header.return_value.collect.assert_called_once()
         # Hits should remain 1 (no cache lookup performed)
         assert test_cache.stats()["hits"] == 1
+
+
+def test_cache_key_consistent_with_partial_options(temp_cache_dir: Path) -> None:
+    """Verify that partial/implicit options resolve to the same key as full explicit options."""
+    cache = ScanCache(directory=temp_cache_dir)
+    options1 = {"browser": True}
+    options2 = {
+        "browser": True,
+        "scan_technologies": True,
+        "scan_subdomains": True,
+        "scan_endpoints": True,
+        "fingerprints_path": None,
+        "crawl_depth": 1,
+    }
+    key1 = cache._make_key("https://dnsblocks.in", options1)
+    key2 = cache._make_key("https://dnsblocks.in", options2)
+    assert key1 == key2
+
+
+def test_cache_key_differs_for_different_options(temp_cache_dir: Path) -> None:
+    """Verify that different configurations produce different keys (e.g. tech-only vs full)."""
+    cache = ScanCache(directory=temp_cache_dir)
+    tech_options = {
+        "browser": True,
+        "scan_technologies": True,
+        "scan_subdomains": False,
+        "scan_endpoints": False,
+    }
+    full_options = {
+        "browser": True,
+        "scan_technologies": True,
+        "scan_subdomains": True,
+        "scan_endpoints": True,
+    }
+    key_tech = cache._make_key("https://dnsblocks.in", tech_options)
+    key_full = cache._make_key("https://dnsblocks.in", full_options)
+    assert key_tech != key_full

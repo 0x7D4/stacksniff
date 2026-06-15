@@ -44,6 +44,9 @@ Starts an asynchronous scanning task for a target URL.
 | `browser` | Boolean | No | `true` | If `true`, runs browser-based collectors (Chromium) |
 | `timeout` | Float | No | `30.0` | Internal timeout for individual collectors |
 | `force_rescan` | Boolean | No | `false` | If `true`, bypasses stacksniff's file-based cache and triggers a fresh scan |
+| `scan_technologies` | Boolean | No | `true` | If `true`, runs technology fingerprint matching |
+| `scan_subdomains` | Boolean | No | `true` | If `true`, runs subdomain mapping (crt.sh/HackerTarget lookups + HEAD probing) |
+| `scan_endpoints` | Boolean | No | `true` | If `true`, runs API endpoint detection and framework prober |
 
 * **Request Example:**
   ```json
@@ -51,7 +54,10 @@ Starts an asynchronous scanning task for a target URL.
     "url": "https://example.com",
     "browser": true,
     "timeout": 30.0,
-    "force_rescan": false
+    "force_rescan": false,
+    "scan_technologies": true,
+    "scan_subdomains": true,
+    "scan_endpoints": true
   }
   ```
 
@@ -68,7 +74,10 @@ Starts an asynchronous scanning task for a target URL.
     "error_message": null,
     "options": {
       "browser": true,
-      "timeout": 30.0
+      "timeout": 30.0,
+      "scan_technologies": true,
+      "scan_subdomains": true,
+      "scan_endpoints": true
     },
     "result": null
   }
@@ -110,7 +119,10 @@ Retrieves a paginated list of all scan jobs, sorted newest first.
         "error_message": null,
         "options": {
           "browser": true,
-          "timeout": 30.0
+          "timeout": 30.0,
+          "scan_technologies": true,
+          "scan_subdomains": true,
+          "scan_endpoints": true
         },
         "result": {
           "id": "e0b02bb9-5100-4bbf-93f8-8bb8a241a82f",
@@ -151,7 +163,10 @@ Retrieves details for a single scan job. If completed, includes the full nested 
     "error_message": null,
     "options": {
       "browser": true,
-      "timeout": 30.0
+      "timeout": 30.0,
+      "scan_technologies": true,
+      "scan_subdomains": true,
+      "scan_endpoints": true
     },
     "result": {
       "id": "e0b02bb9-5100-4bbf-93f8-8bb8a241a82f",
@@ -244,6 +259,76 @@ For high-volume client polling or simpler frontend extraction, you can fetch spe
 * **URL:** `/api/scans/{id}/dependencies/`
 * **Method:** `GET`
 * **Response:** Array of runtime external dependencies.
+
+---
+
+## Shortcut Scan Actions (Singular `/api/scan/` prefix)
+
+These action-oriented POST endpoints provide preset configurations. They only require a `"url"` in the JSON request body. Optional parameters `timeout` and `force_rescan` are supported.
+
+### 1. Scan Technology Stack Only
+Triggers a fast scan checking only headers, HTML, cookies, and JavaScript globals (skips subdomains and endpoints).
+* **URL:** `/api/scan/tech/`
+* **Method:** `POST`
+* **Request Example:**
+  ```json
+  {
+    "url": "https://example.com"
+  }
+  ```
+* **Preset Configuration:**
+  - `scan_technologies`: `true`
+  - `scan_subdomains`: `false`
+  - `scan_endpoints`: `false`
+  - `browser`: `true`
+
+### 2. Full Scan
+Triggers a comprehensive scan checking tech stacks, subdomains, and API endpoints.
+* **URL:** `/api/scan/full/`
+* **Method:** `POST`
+* **Request Example:**
+  ```json
+  {
+    "url": "https://example.com"
+  }
+  ```
+* **Preset Configuration:**
+  - `scan_technologies`: `true`
+  - `scan_subdomains`: `true`
+  - `scan_endpoints`: `true`
+  - `browser`: `true`
+
+### 3. Scan API Endpoints Only
+Checks for API endpoints and probes framework directories (skips subdomains and tech fingerprinting).
+* **URL:** `/api/scan/endpoints/`
+* **Method:** `POST`
+* **Request Example:**
+  ```json
+  {
+    "url": "https://example.com"
+  }
+  ```
+* **Preset Configuration:**
+  - `scan_technologies`: `false`
+  - `scan_subdomains`: `false`
+  - `scan_endpoints`: `true`
+  - `browser`: `true`
+
+### 4. Scan Subdomains Only
+Checks for Certificate Transparency and DNS subdomains (headless-free, skipping Playwright/browser to save memory).
+* **URL:** `/api/scan/subdomains/`
+* **Method:** `POST`
+* **Request Example:**
+  ```json
+  {
+    "url": "https://example.com"
+  }
+  ```
+* **Preset Configuration:**
+  - `scan_technologies`: `false`
+  - `scan_subdomains`: `true`
+  - `scan_endpoints`: `false`
+  - `browser`: `false`
 
 ---
 

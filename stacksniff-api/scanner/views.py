@@ -1,8 +1,10 @@
 import logging
+from typing import Any
 
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from scanner.models import ScanJob, ScanResult
 from scanner.serializers import (
@@ -12,6 +14,39 @@ from scanner.serializers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def create_scan_job(validated_data):
+    url = validated_data["url"]
+    browser = validated_data.get("browser", True)
+    timeout = validated_data.get("timeout", 30.0)
+    force_rescan = validated_data.get("force_rescan", False)
+    scan_technologies = validated_data.get("scan_technologies", True)
+    scan_subdomains = validated_data.get("scan_subdomains", True)
+    scan_endpoints = validated_data.get("scan_endpoints", True)
+
+    # Create the ScanJob model entry
+    job = ScanJob.objects.create(
+        url=url,
+        status="pending",
+        options={
+            "browser": browser,
+            "timeout": timeout,
+            "scan_technologies": scan_technologies,
+            "scan_subdomains": scan_subdomains,
+            "scan_endpoints": scan_endpoints,
+        },
+    )
+
+    # Trigger the asynchronous Celery task
+    from scanner.tasks import run_scan
+
+    task_res = run_scan.delay(str(job.id), force_rescan=force_rescan)
+
+    # Save the Celery task ID for potential cancellation
+    job.celery_task_id = task_res.id
+    job.save()
+    return job
 
 
 class ScanJobViewSet(viewsets.ModelViewSet):
@@ -47,30 +82,7 @@ class ScanJobViewSet(viewsets.ModelViewSet):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        validated_data = serializer.validated_data
-        url = validated_data["url"]
-        browser = validated_data.get("browser", True)
-        timeout = validated_data.get("timeout", 30.0)
-        force_rescan = validated_data.get("force_rescan", False)
-
-        # Create the ScanJob model entry
-        job = ScanJob.objects.create(
-            url=url,
-            status="pending",
-            options={
-                "browser": browser,
-                "timeout": timeout,
-            },
-        )
-
-        # Trigger the asynchronous Celery task
-        from scanner.tasks import run_scan
-
-        task_res = run_scan.delay(str(job.id), force_rescan=force_rescan)
-
-        # Save the Celery task ID for potential cancellation
-        job.celery_task_id = task_res.id
-        job.save()
+        job = create_scan_job(serializer.validated_data)
 
         # Serialize and return the created job
         job_serializer = ScanJobSerializer(job)
@@ -154,3 +166,60 @@ class ScanJobViewSet(viewsets.ModelViewSet):
                 {"error": f"Scan result is not available. Scan status: {job.status}"},
                 status=status.HTTP_404_NOT_FOUND,
             )
+
+
+class ShortcutScanView(APIView):
+    PRESET: dict[str, Any] = {}
+
+    def post(self, request, *args, **kwargs):
+        data = {**self.PRESET}
+        if "url" in request.data:
+            data["url"] = request.data["url"]
+        if "timeout" in request.data:
+            data["timeout"] = request.data["timeout"]
+        if "force_rescan" in request.data:
+            data["force_rescan"] = request.data["force_rescan"]
+
+        serializer = ScanJobCreateSerializer(data=data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        job = create_scan_job(serializer.validated_data)
+        job_serializer = ScanJobSerializer(job)
+        return Response(job_serializer.data, status=status.HTTP_201_CREATED)
+
+
+class ShortcutTechView(ShortcutScanView):
+    PRESET = {
+        "scan_technologies": True,
+        "scan_subdomains": False,
+        "scan_endpoints": False,
+        "browser": True,
+    }
+
+
+class ShortcutFullView(ShortcutScanView):
+    PRESET = {
+        "scan_technologies": True,
+        "scan_subdomains": True,
+        "scan_endpoints": True,
+        "browser": True,
+    }
+
+
+class ShortcutEndpointsView(ShortcutScanView):
+    PRESET = {
+        "scan_technologies": False,
+        "scan_subdomains": False,
+        "scan_endpoints": True,
+        "browser": True,
+    }
+
+
+class ShortcutSubdomainsView(ShortcutScanView):
+    PRESET = {
+        "scan_technologies": False,
+        "scan_subdomains": True,
+        "scan_endpoints": False,
+        "browser": False,
+    }

@@ -45,6 +45,7 @@ class ScanResult(models.Model):
     openapi_spec_found = models.BooleanField(default=False)
     phases_completed = models.JSONField(default=list)
     rules_count = models.IntegerField(default=0)
+    fingerprints_version = models.CharField(max_length=100, default="1.0")
 
     def __str__(self) -> str:
         return f"ScanResult({self.id}) - {self.url}"

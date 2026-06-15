@@ -18,6 +18,7 @@ class ScanResultSerializer(serializers.ModelSerializer):
             "openapi_spec_found",
             "phases_completed",
             "rules_count",
+            "fingerprints_version",
         ]
 
 
@@ -45,3 +46,7 @@ class ScanJobCreateSerializer(serializers.Serializer):
     browser = serializers.BooleanField(default=True)
     timeout = serializers.FloatField(default=30.0, min_value=1.0)
     force_rescan = serializers.BooleanField(default=False)
+    scan_technologies = serializers.BooleanField(default=True)
+    scan_subdomains = serializers.BooleanField(default=True)
+    scan_endpoints = serializers.BooleanField(default=True)
+
