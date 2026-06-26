@@ -110,7 +110,9 @@ async def test_scanner_http_only(mock_collectors: dict[str, AsyncMock]) -> None:
 
     assert isinstance(result, ScanResult)
     assert result.url == "https://example.com"
-    assert result.meta.phases_completed == ["http"]
+    # scan_endpoints=True (default) means JsStaticCollector runs → "static" is
+    # prepended before "http" in phases_completed.
+    assert result.meta.phases_completed == ["static", "http"]
 
     # Check collector calls
     mock_collectors["header"].collect.assert_called_once_with("https://example.com")
@@ -249,3 +251,177 @@ async def test_scanner_subdomains_without_endpoints(mock_collectors: dict[str, A
         assert isinstance(result, ScanResult)
         # Verify DomainMapper was called
         mock_mapper.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Conditional collector execution tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_tech_only_skips_network_collector(mock_collectors: dict[str, AsyncMock]) -> None:
+    """Tech-only scan must NOT launch NetworkCollector, JsStaticCollector, or DomainMapper.
+
+    JsCollector (JS globals) IS required for technology detection.
+    """
+    test_yaml = Path(__file__).parents[1] / "fingerprints" / "tech.yaml"
+
+    mock_playwright = MagicMock()
+    with (
+        patch.dict(sys.modules, {"playwright": mock_playwright}),
+        patch("stacksniff.scanner.DomainMapper") as mock_mapper,
+    ):
+        mapper_instance = mock_mapper.return_value
+        mapper_instance.collect = AsyncMock(
+            return_value=CollectorResult(data={"external_dependencies": [], "internal_subdomains": []})
+        )
+
+        scanner = Scanner(fingerprints_path=test_yaml)
+        result = await scanner.scan(
+            "https://example.com",
+            browser=True,
+            scan_technologies=True,
+            scan_endpoints=False,
+            subdomains=False,
+        )
+
+    assert isinstance(result, ScanResult)
+    # JsCollector ran (JS globals needed for tech detection)
+    mock_collectors["js"].collect.assert_called_once_with("https://example.com")
+    # NetworkCollector must NOT have run
+    mock_collectors["net"].collect.assert_not_called()
+    # JsStaticCollector must NOT have run (scan_endpoints=False)
+    mock_collectors["static"].collect.assert_not_called()
+    # DomainMapper must NOT have run (subdomains=False)
+    mock_mapper.assert_not_called()
+    # "browser" phase recorded because JsCollector ran
+    assert "browser" in result.meta.phases_completed
+    # "static" phase NOT recorded
+    assert "static" not in result.meta.phases_completed
+
+
+@pytest.mark.asyncio
+async def test_subdomains_only_skips_all_browser(
+    mock_collectors: dict[str, AsyncMock],
+) -> None:
+    """Subdomains-only scan must not launch any browser collector.
+
+    DomainMapper (CT log + HEAD probes) IS required.
+    """
+    test_yaml = Path(__file__).parents[1] / "fingerprints" / "tech.yaml"
+
+    mock_playwright = MagicMock()
+    with (
+        patch.dict(sys.modules, {"playwright": mock_playwright}),
+        patch("stacksniff.scanner.DomainMapper") as mock_mapper,
+    ):
+        mapper_instance = mock_mapper.return_value
+        mapper_instance.collect = AsyncMock(
+            return_value=CollectorResult(
+                data={"external_dependencies": [], "internal_subdomains": ["api.example.com"]}
+            )
+        )
+
+        scanner = Scanner(fingerprints_path=test_yaml)
+        result = await scanner.scan(
+            "https://example.com",
+            browser=True,
+            scan_technologies=False,
+            scan_endpoints=False,
+            subdomains=True,
+        )
+
+    assert isinstance(result, ScanResult)
+    # No browser collectors should have run
+    mock_collectors["js"].collect.assert_not_called()
+    mock_collectors["net"].collect.assert_not_called()
+    # JsStaticCollector must NOT have run (scan_endpoints=False)
+    mock_collectors["static"].collect.assert_not_called()
+    # DomainMapper MUST have run
+    mock_mapper.assert_called_once()
+    # Phases: browser skipped, static skipped
+    assert "browser" not in result.meta.phases_completed
+    assert "static" not in result.meta.phases_completed
+    assert "http" in result.meta.phases_completed
+
+
+@pytest.mark.asyncio
+async def test_endpoints_only_skips_js_collector(
+    mock_collectors: dict[str, AsyncMock],
+) -> None:
+    """Endpoints-only scan must use NetworkCollector + JsStaticCollector but NOT JsCollector.
+
+    FingerprintMatcher (tech detection) must also be skipped.
+    """
+    test_yaml = Path(__file__).parents[1] / "fingerprints" / "tech.yaml"
+
+    mock_playwright = MagicMock()
+    with (
+        patch.dict(sys.modules, {"playwright": mock_playwright}),
+        patch("stacksniff.scanner.FingerprintMatcher") as mock_fp,
+    ):
+        scanner = Scanner(fingerprints_path=test_yaml)
+        result = await scanner.scan(
+            "https://example.com",
+            browser=True,
+            scan_technologies=False,
+            scan_endpoints=True,
+            subdomains=False,
+        )
+
+    assert isinstance(result, ScanResult)
+    # JsCollector must NOT have run (JS globals not needed for endpoints)
+    mock_collectors["js"].collect.assert_not_called()
+    # NetworkCollector MUST have run
+    mock_collectors["net"].collect.assert_called_once_with("https://example.com")
+    # JsStaticCollector MUST have run
+    mock_collectors["static"].collect.assert_called_once()
+    # FingerprintMatcher must NOT have been invoked (scan_technologies=False)
+    mock_fp.assert_not_called()
+    # "browser" phase recorded because NetworkCollector ran
+    assert "browser" in result.meta.phases_completed
+    assert "static" in result.meta.phases_completed
+
+
+@pytest.mark.asyncio
+async def test_full_scan_runs_all_collectors(
+    mock_collectors: dict[str, AsyncMock],
+) -> None:
+    """Full scan (all flags True) must run every collector."""
+    test_yaml = Path(__file__).parents[1] / "fingerprints" / "tech.yaml"
+
+    mock_playwright = MagicMock()
+    with (
+        patch.dict(sys.modules, {"playwright": mock_playwright}),
+        patch("stacksniff.scanner.DomainMapper") as mock_mapper,
+    ):
+        mapper_instance = mock_mapper.return_value
+        mapper_instance.collect = AsyncMock(
+            return_value=CollectorResult(data={"external_dependencies": [], "internal_subdomains": []})
+        )
+
+        scanner = Scanner(fingerprints_path=test_yaml)
+        result = await scanner.scan(
+            "https://example.com",
+            browser=True,
+            scan_technologies=True,
+            scan_endpoints=True,
+            subdomains=True,
+        )
+
+    assert isinstance(result, ScanResult)
+    # All HTTP collectors ran
+    mock_collectors["header"].collect.assert_called_once_with("https://example.com")
+    mock_collectors["cookie"].collect.assert_called_once_with("https://example.com")
+    mock_collectors["html"].collect.assert_called_once_with("https://example.com")
+    # Both browser collectors ran
+    mock_collectors["js"].collect.assert_called_once_with("https://example.com")
+    mock_collectors["net"].collect.assert_called_once_with("https://example.com")
+    # JsStaticCollector ran
+    mock_collectors["static"].collect.assert_called_once()
+    # DomainMapper ran
+    mock_mapper.assert_called_once()
+    # All phases completed
+    assert "http" in result.meta.phases_completed
+    assert "browser" in result.meta.phases_completed
+    assert "static" in result.meta.phases_completed

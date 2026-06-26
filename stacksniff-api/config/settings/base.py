@@ -28,6 +28,7 @@ INSTALLED_APPS = [
     "rest_framework",
     "rest_framework.authtoken",
     "corsheaders",
+    "adrf",
     # Local apps
     "scanner",
 ]
@@ -124,4 +125,4 @@ CELERY_TIMEZONE = TIME_ZONE
 # leading to WinError 5 Access Denied / WinError 6 Invalid Handle crashes during process setup.
 # We default to the 'solo' pool when running on Windows.
 if os.name == "nt":
-    CELERY_WORKER_POOL = "solo"
+    CELERY_WORKER_POOL = env.str("CELERY_POOL", default="gevent")

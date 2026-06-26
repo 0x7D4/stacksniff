@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from django.core.cache import cache
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework import status
@@ -400,3 +401,76 @@ class ScanJobCeleryTaskTests(APITestCase):
             scan_technologies=False,
             scan_endpoints=False,
         )
+
+
+class HealthAndRateLimitTests(APITestCase):
+    """Tests for the health check endpoint and per-IP rate limiting."""
+
+    def setUp(self):
+        # Clear the cache before EVERY individual test so rate limit counts
+        # from other tests (or earlier runs of this test) cannot leak in.
+        # Must be setUp (not setUpClass) to reset between each test method.
+        cache.clear()
+
+    def test_health_check_ok(self):
+        """GET /api/health/ returns 200 and status=ok when DB is reachable
+        and Celery workers are active."""
+        mock_inspector = MagicMock()
+        mock_inspector.active.return_value = {"worker1@host": []}
+
+        with patch("config.celery.app.control.inspect", return_value=mock_inspector):
+            response = self.client.get("/api/health/")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["status"], "ok")
+        self.assertEqual(data["checks"]["database"], "ok")
+        self.assertEqual(data["checks"]["celery"], "ok")
+
+    def test_health_check_db_error(self):
+        """GET /api/health/ returns 503 and status=degraded when the DB query fails."""
+        mock_inspector = MagicMock()
+        mock_inspector.active.return_value = {"worker1@host": []}
+
+        with patch("config.celery.app.control.inspect", return_value=mock_inspector), \
+             patch("scanner.views.ScanJob") as mock_model:
+            mock_model.objects.acount = AsyncMock(
+                side_effect=Exception("DB connection refused")
+            )
+            response = self.client.get("/api/health/")
+
+        self.assertEqual(response.status_code, 503)
+        data = response.json()
+        self.assertEqual(data["status"], "degraded")
+        self.assertIn("error", data["checks"]["database"])
+        self.assertIn("DB connection refused", data["checks"]["database"])
+
+    @patch("scanner.tasks.run_scan.delay")
+    def test_rate_limit_enforced(self, mock_delay):
+        """The 11th POST to /api/scans/ from the same IP within 1 minute
+        returns HTTP 429 with a Retry-After header.
+
+        cache.clear() in setUp() ensures each test starts from zero requests.
+        """
+        mock_delay.return_value.id = "task-rate-test"
+        url = reverse("scan-list")
+        data = {"url": "https://ratelimit-test.com"}
+
+        # First 10 requests must all succeed
+        for i in range(10):
+            response = self.client.post(url, data, format="json")
+            self.assertEqual(
+                response.status_code,
+                status.HTTP_201_CREATED,
+                msg=f"Request {i + 1} should succeed but got {response.status_code}",
+            )
+
+        # 11th request must be rejected
+        response = self.client.post(url, data, format="json")
+        self.assertEqual(response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+        self.assertIn(
+            "Retry-After",
+            response.headers,
+            msg="429 response must include Retry-After header",
+        )
+        self.assertEqual(response.headers["Retry-After"], "60")

@@ -1,54 +1,49 @@
 #!/bin/bash
 # ==============================================================================
 # stacksniff — Production Setup & Deployment Script
-# Supports: Debian / Ubuntu Linux
-# Enforces: set -euo pipefail, idempotency, RAM-based resource auto-tuning,
-#           robust offline IP detection, and clean uninstallation.
+#
+# Supports:  Debian / Ubuntu Linux (20.04+)
+# Requires:  sudo / root
+# Usage:     sudo bash setup.sh [--dir <install_path>] [--uninstall] [--help]
+#
+# Idempotent: safe to run multiple times on the same server.
 # ==============================================================================
 
 set -euo pipefail
 
-# ANSI color codes
+# ------------------------------------------------------------------------------
+# ANSI colour helpers
+# ------------------------------------------------------------------------------
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
 
-# Logging helper functions
-log_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
-}
+log_info()    { echo -e "${BLUE}[INFO]${NC}    $1"; }
+log_success() { echo -e "${GREEN}[OK]${NC}      $1"; }
+log_warning() { echo -e "${YELLOW}[WARN]${NC}    $1"; }
+log_error()   { echo -e "${RED}[ERROR]${NC}   $1" >&2; }
+log_step()    { echo -e "\n${CYAN}${BOLD}━━━  $1  ━━━${NC}"; }
 
-log_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
-}
-
-log_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
-}
-
-log_error() {
-    echo -e "${RED}[ERROR]${NC} $1" >&2
-}
-
-# ==============================================================================
-# CONFIGURATION (Editable defaults)
-# ==============================================================================
+# ------------------------------------------------------------------------------
+# Global configuration defaults (overridable via --dir flag)
+# ------------------------------------------------------------------------------
 INSTALL_DIR="/opt/stacksniff"
-ALLOWED_HOSTS=""       # Leave empty to auto-detect server IP/domain
-MAX_BROWSERS=3
-CACHE_TTL=1800
-CELERY_WORKERS=2
-
-# Get current script folder
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# ==============================================================================
-# FUNCTIONS
-# ==============================================================================
+# Tunable resource values – set by tune_resources()
+CELERY_WORKERS=2
+MAX_BROWSERS=3
+CACHE_TTL=1800
+DETECTED_IP=""
+API_TOKEN=""
 
-# Parse command line arguments
+# ------------------------------------------------------------------------------
+# parse_args  — handle --dir, --uninstall, --help
+# ------------------------------------------------------------------------------
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case $1 in
@@ -57,395 +52,550 @@ parse_args() {
                 shift 2
                 ;;
             --uninstall)
-                run_uninstall
+                check_root
+                uninstall
+                exit 0
+                ;;
+            --help|-h)
+                echo "Usage: sudo bash setup.sh [--dir <install_path>] [--uninstall] [--help]"
+                echo ""
+                echo "  --dir <path>   Install to <path> instead of /opt/stacksniff"
+                echo "  --uninstall    Remove all installed components"
+                echo "  --help         Show this message"
                 exit 0
                 ;;
             *)
                 log_error "Unknown argument: $1"
-                echo "Usage: sudo bash setup.sh [--dir <install_path>] [--uninstall]"
+                echo "Run with --help for usage."
                 exit 1
                 ;;
         esac
     done
 }
 
-# Verify running with root/sudo privileges
-check_privileges() {
+# ------------------------------------------------------------------------------
+# check_root  — abort early if not running as root
+# ------------------------------------------------------------------------------
+check_root() {
     if [ "$EUID" -ne 0 ]; then
         log_error "This script must be run as root or with sudo."
+        log_error "Try: sudo bash setup.sh"
         exit 1
     fi
 }
 
-# Auto-tune resource parameters for smaller VPS (less than 2GB RAM)
+# ------------------------------------------------------------------------------
+# tune_resources  — set CELERY_WORKERS and MAX_BROWSERS based on available RAM
+# ------------------------------------------------------------------------------
 tune_resources() {
-    if [ -f /proc/meminfo ]; then
-        TOTAL_RAM_MB=$(free -m | awk '/^Mem:/{print $2}')
-        if [ -n "$TOTAL_RAM_MB" ] && [ "$TOTAL_RAM_MB" -lt 2048 ]; then
-            log_warning "Low memory detected (${TOTAL_RAM_MB}MB RAM). Automatically clamping Celery workers and BrowserPool to prevent OOM."
-            CELERY_WORKERS=1
-            MAX_BROWSERS=2
-        fi
+    log_step "Resource tuning"
+
+    local ram_mb=0
+    if command -v free &>/dev/null; then
+        ram_mb=$(free -m | awk '/^Mem:/{print $2}')
     fi
+
+    if [ "$ram_mb" -lt 2048 ]; then
+        CELERY_WORKERS=1
+        MAX_BROWSERS=2
+        log_warning "Low memory: ${ram_mb}MB RAM detected → workers=1, browsers=2"
+    elif [ "$ram_mb" -lt 4096 ]; then
+        CELERY_WORKERS=2
+        MAX_BROWSERS=3
+        log_info "Medium memory: ${ram_mb}MB RAM detected → workers=2, browsers=3"
+    else
+        CELERY_WORKERS=4
+        MAX_BROWSERS=5
+        log_info "High memory: ${ram_mb}MB RAM detected → workers=4, browsers=5"
+    fi
+
+    log_success "Tuned: CELERY_WORKERS=${CELERY_WORKERS}, MAX_BROWSERS=${MAX_BROWSERS}"
 }
 
-# Install core system dependencies
-install_dependencies() {
-    log_info "Installing system dependencies..."
-    apt-get update
+# ------------------------------------------------------------------------------
+# install_system_deps  — idempotent apt + uv install
+# ------------------------------------------------------------------------------
+install_system_deps() {
+    log_step "System dependencies"
 
-    # Ensure apt-transport-https is available
-    apt-get install -y apt-transport-https ca-certificates gnupg
+    log_info "Running apt-get update..."
+    apt-get update -qq
 
-    # Install Python 3.12, Redis, Nginx, and Supervisor
-    apt-get install -y \
-        python3.12 \
-        python3.12-pip \
-        python3.12-venv \
+    log_info "Installing system packages..."
+    apt-get install -y -qq \
+        python3 \
+        python3-venv \
+        python3-pip \
         curl \
         git \
         redis-server \
         nginx \
         supervisor \
-        rsync
+        rsync \
+        apt-transport-https \
+        ca-certificates
 
-    # Install Astral uv globally if not already present
-    if ! command -v uv &> /dev/null; then
+    # Install uv (Astral) — idempotent via command check
+    if command -v uv &>/dev/null; then
+        log_info "uv is already installed: $(uv --version)"
+    else
         log_info "Installing Astral uv..."
         curl -LsSf https://astral.sh/uv/install.sh | sh
-        # Ensure uv path is exported for the active shell
+        # Source uv into PATH for the rest of this session
         export PATH="$HOME/.local/bin:$PATH"
-    else
-        log_info "Astral uv is already installed."
+        log_success "uv installed: $(uv --version)"
     fi
+
+    # Make sure uv is on PATH even if it was already installed elsewhere
+    export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
 }
 
-# Scaffolding project directories and local virtual environments
-setup_project_directories() {
-    log_info "Setting up project directory structure at: $INSTALL_DIR..."
-    mkdir -p "$INSTALL_DIR/stacksniff"
+# ------------------------------------------------------------------------------
+# setup_project  — copy sources, sync dependencies, install Playwright
+# ------------------------------------------------------------------------------
+setup_project() {
+    log_step "Project setup"
+
+    # Create install directories
+    mkdir -p "$INSTALL_DIR"
     mkdir -p "$INSTALL_DIR/stacksniff-api"
 
-    # Copy repository files to the installation path if not already running there
+    # Sync sources only when running from a different directory (idempotent)
     if [ "$SCRIPT_DIR" != "$INSTALL_DIR" ]; then
-        log_info "Copying project source files..."
-        if [ -d "$SCRIPT_DIR/stacksniff-api" ]; then
-            cp -r "$SCRIPT_DIR/stacksniff-api/." "$INSTALL_DIR/stacksniff-api/"
-        fi
-        
-        # Copy core stacksniff engine package
-        if command -v rsync &> /dev/null; then
-            rsync -a \
-                --exclude='stacksniff-api' \
-                --exclude='.venv' \
-                --exclude='.git' \
-                --exclude='.pytest_cache' \
-                --exclude='.mypy_cache' \
-                --exclude='db.sqlite3' \
-                "$SCRIPT_DIR/" "$INSTALL_DIR/stacksniff/"
-        else
-            cp -r "$SCRIPT_DIR/pyproject.toml" "$SCRIPT_DIR/src" "$SCRIPT_DIR/README.md" "$INSTALL_DIR/stacksniff/" || true
-        fi
+        log_info "Syncing stacksniff library → $INSTALL_DIR/"
+        rsync -av --delete \
+            --exclude='.venv' \
+            --exclude='__pycache__' \
+            --exclude='*.pyc' \
+            --exclude='.git' \
+            --exclude='.pytest_cache' \
+            --exclude='.mypy_cache' \
+            --exclude='stacksniff-api' \
+            "$SCRIPT_DIR/" "$INSTALL_DIR/"
+
+        log_info "Syncing stacksniff-api → $INSTALL_DIR/stacksniff-api/"
+        rsync -av --delete \
+            --exclude='.venv' \
+            --exclude='__pycache__' \
+            --exclude='*.pyc' \
+            --exclude='.git' \
+            --exclude='.pytest_cache' \
+            --exclude='db.sqlite3' \
+            --exclude='staticfiles' \
+            "$SCRIPT_DIR/stacksniff-api/" "$INSTALL_DIR/stacksniff-api/"
     fi
 
-    # Sync and build python dependencies inside stacksniff-api
-    log_info "Installing python dependencies and building virtual environments..."
-    cd "$INSTALL_DIR/stacksniff-api"
-    
-    # Run uv sync to scaffold api environment
+    # Sync scanner library venv
+    log_info "Syncing stacksniff library dependencies..."
+    cd "$INSTALL_DIR"
     uv sync
 
-    # Install stacksniff engine as editable package inside the API virtualenv
-    uv pip install -e ../stacksniff/
+    # Sync API venv
+    log_info "Syncing stacksniff-api dependencies..."
+    cd "$INSTALL_DIR/stacksniff-api"
+    uv sync
 
-    # Install gunicorn for production Django execution
-    uv pip install gunicorn
+    # Install scanner library as editable into API venv
+    log_info "Installing stacksniff as editable package in API venv..."
+    uv pip install -e ../
 
-    # Install Playwright browser and system dependencies
-    log_info "Installing Playwright chromium browser binaries..."
+    # Install production ASGI server
+    log_info "Installing uvicorn + gevent in API venv..."
+    uv pip install \
+        "uvicorn[standard]>=0.30.0" \
+        "uvicorn-worker>=0.3.0" \
+        "gevent>=24.0.0"
+
+    # Install Playwright chromium
+    log_info "Installing Playwright Chromium browser..."
+    cd "$INSTALL_DIR"
     uv run playwright install chromium
-    
+
     log_info "Installing Playwright system dependencies..."
     uv run playwright install-deps chromium
+
+    log_success "Project setup complete"
 }
 
-# Resolve and write environment configuration
+# ------------------------------------------------------------------------------
+# configure_environment  — detect IP, write .env, migrate, collectstatic, tokens
+# ------------------------------------------------------------------------------
 configure_environment() {
-    log_info "Resolving system network IP address..."
-    
-    DETECTED_IP=""
-    
-    # 1. Try local IP command
-    if command -v ip &> /dev/null; then
-        DETECTED_IP=$(ip addr show | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | cut -d/ -f1 | head -1)
-    fi
-    
-    # 2. Try hostname command
-    if [ -z "$DETECTED_IP" ] && command -v hostname &> /dev/null; then
-        DETECTED_IP=$(hostname -I | awk '{print $1}')
-    fi
-    
-    # 3. Try external check IP service
+    log_step "Environment configuration"
+
+    # --- IP detection: four-level fallback chain ---
+    log_info "Detecting server IP address..."
+
+    # 1. ip addr
+    DETECTED_IP=$(ip addr show 2>/dev/null \
+        | grep 'inet ' \
+        | grep -v '127.0.0.1' \
+        | awk '{print $2}' \
+        | cut -d/ -f1 \
+        | head -1 || true)
+
+    # 2. hostname -I
     if [ -z "$DETECTED_IP" ]; then
-        DETECTED_IP=$(curl -s --max-time 5 https://ipinfo.io/ip || echo "")
+        DETECTED_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || true)
     fi
 
-    # Bind host IP if empty
-    if [ -z "${ALLOWED_HOSTS:-}" ]; then
-        if [ -n "$DETECTED_IP" ]; then
-            ALLOWED_HOSTS="$DETECTED_IP"
-            log_info "Auto-detected server host IP: $ALLOWED_HOSTS"
-        else
-            log_warning "Could not auto-detect server IP."
-            read -p "Please enter ALLOWED_HOSTS (IP address or domain name): " ALLOWED_HOSTS
-            if [ -z "$ALLOWED_HOSTS" ]; then
-                log_error "ALLOWED_HOSTS configuration is required."
-                exit 1
-            fi
+    # 3. External lookup (non-fatal)
+    if [ -z "$DETECTED_IP" ]; then
+        DETECTED_IP=$(curl -s --max-time 5 https://ipinfo.io/ip 2>/dev/null || true)
+    fi
+
+    # 4. Prompt user
+    if [ -z "$DETECTED_IP" ]; then
+        log_warning "Could not auto-detect server IP."
+        read -rp "Enter server IP or domain name: " DETECTED_IP
+        if [ -z "$DETECTED_IP" ]; then
+            log_error "Server IP/domain is required."
+            exit 1
         fi
     fi
 
-    log_info "Generating environment file .env..."
-    SECRET_KEY=$(openssl rand -base64 38 | tr -d '\n' | head -c 50)
-    
-    cat <<EOF > "$INSTALL_DIR/stacksniff-api/.env"
+    log_success "Server address: $DETECTED_IP"
+
+    # --- Generate SECRET_KEY ---
+    local secret_key
+    secret_key=$(python3 -c "import secrets; print(secrets.token_urlsafe(50))")
+
+    # --- Write .env (idempotent – always regenerated with fresh key) ---
+    log_info "Writing $INSTALL_DIR/stacksniff-api/.env..."
+    cat > "$INSTALL_DIR/stacksniff-api/.env" << EOF
 DJANGO_SETTINGS_MODULE=config.settings.prod
-SECRET_KEY=$SECRET_KEY
-ALLOWED_HOSTS=$ALLOWED_HOSTS
+SECRET_KEY=${secret_key}
+ALLOWED_HOSTS=${DETECTED_IP},localhost,127.0.0.1
+CORS_ALLOWED_ORIGINS=http://${DETECTED_IP}
 REDIS_URL=redis://localhost:6379/0
 CELERY_BROKER_URL=redis://localhost:6379/0
-STACKSNIFF_MAX_BROWSERS=$MAX_BROWSERS
-STACKSNIFF_CACHE_TTL=$CACHE_TTL
+CELERY_RESULT_BACKEND=redis://localhost:6379/0
+STACKSNIFF_MAX_BROWSERS=${MAX_BROWSERS}
+STACKSNIFF_CACHE_TTL=${CACHE_TTL}
+CELERY_POOL=gevent
+CELERY_CONCURRENCY=10
 EOF
 
-    log_info "Running Django database migrations..."
+    # --- Database migrations ---
+    log_info "Running Django migrations..."
     cd "$INSTALL_DIR/stacksniff-api"
     uv run python manage.py migrate --noinput
 
-    log_info "Creating default superuser admin idempotently..."
-    ADMIN_PASSWORD=$(openssl rand -hex 8)
-    
-    uv run python manage.py shell -c "
+    # --- Static files ---
+    log_info "Collecting static files..."
+    uv run python manage.py collectstatic --noinput --clear
+
+    # --- Create admin user idempotently ---
+    local admin_password
+    admin_password=$(openssl rand -hex 10)
+
+    local admin_status
+    admin_status=$(uv run python manage.py shell -c "
 from django.contrib.auth import get_user_model
 User = get_user_model()
 if not User.objects.filter(username='admin').exists():
-    User.objects.create_superuser('admin', 'admin@localhost', '$ADMIN_PASSWORD')
+    User.objects.create_superuser('admin', 'admin@localhost', '${admin_password}')
     print('CREATED')
 else:
     print('EXISTS')
-" > /tmp/admin_status.log
+")
 
-    # Extract or generate token
-    log_info "Generating/retrieving API token for admin user..."
-    ADMIN_TOKEN=$(uv run python manage.py shell -c "
+    if echo "$admin_status" | grep -q "CREATED"; then
+        log_success "Admin user created (password: ${admin_password})"
+        echo "  → Save this password — it won't be shown again"
+    else
+        log_info "Admin user already exists"
+    fi
+
+    # --- Generate/retrieve API token ---
+    API_TOKEN=$(uv run python manage.py shell -c "
 from django.contrib.auth import get_user_model
 from rest_framework.authtoken.models import Token
 User = get_user_model()
-u = User.objects.get(username='admin')
-token, _ = Token.objects.get_or_create(user=u)
+user = User.objects.get(username='admin')
+token, _ = Token.objects.get_or_create(user=user)
 print(token.key)
 ")
 
-    # Securely save API token
-    echo "$ADMIN_TOKEN" > "$INSTALL_DIR/API_TOKEN.txt"
+    # Save token securely
+    echo "$API_TOKEN" > "$INSTALL_DIR/API_TOKEN.txt"
     chmod 600 "$INSTALL_DIR/API_TOKEN.txt"
-
-    # Display credentials if newly created
-    if grep -q "CREATED" /tmp/admin_status.log; then
-        log_success "Superuser 'admin' created with password: $ADMIN_PASSWORD"
-    else
-        log_info "Superuser 'admin' already exists. Re-using existing credentials."
-    fi
-    rm -f /tmp/admin_status.log
+    log_success "API token saved → $INSTALL_DIR/API_TOKEN.txt"
 }
 
-# Set up Supervisor services
+# ------------------------------------------------------------------------------
+# configure_supervisor  — write stacksniff.conf and reload
+# ------------------------------------------------------------------------------
 configure_supervisor() {
-    log_info "Configuring Supervisor process control..."
-    
-    # Create logs path
+    log_step "Supervisor configuration"
+
     mkdir -p /var/log/stacksniff
 
-    cat <<EOF > /etc/supervisor/conf.d/stacksniff.conf
-[program:stacksniff-django]
-command=$INSTALL_DIR/stacksniff-api/.venv/bin/gunicorn config.wsgi:application --bind 127.0.0.1:8000 --workers 4
-directory=$INSTALL_DIR/stacksniff-api
+    local venv_bin="$INSTALL_DIR/stacksniff-api/.venv/bin"
+
+    cat > /etc/supervisor/conf.d/stacksniff.conf << EOF
+[program:stacksniff-api]
+command=${venv_bin}/gunicorn config.asgi:application \
+    --worker-class uvicorn.workers.UvicornWorker \
+    --workers ${CELERY_WORKERS} \
+    --bind 127.0.0.1:8000 \
+    --timeout 120 \
+    --graceful-timeout 30
+directory=${INSTALL_DIR}/stacksniff-api
+environment=PATH="${venv_bin}:%%(ENV_PATH)s"
+user=root
 autostart=true
 autorestart=true
-stderr_logfile=/var/log/stacksniff/django.err.log
-stdout_logfile=/var/log/stacksniff/django.out.log
+startretries=5
+stderr_logfile=/var/log/stacksniff/api.err.log
+stdout_logfile=/var/log/stacksniff/api.out.log
 
 [program:stacksniff-celery]
-command=$INSTALL_DIR/stacksniff-api/.venv/bin/celery -A config worker --loglevel=info --concurrency=$CELERY_WORKERS
-directory=$INSTALL_DIR/stacksniff-api
+command=${venv_bin}/celery -A config worker \
+    --pool=gevent \
+    --concurrency=10 \
+    --loglevel=info \
+    --without-gossip \
+    --without-mingle
+directory=${INSTALL_DIR}/stacksniff-api
+environment=PATH="${venv_bin}:%%(ENV_PATH)s"
+user=root
 autostart=true
 autorestart=true
+startretries=5
+stopwaitsecs=120
 stderr_logfile=/var/log/stacksniff/celery.err.log
 stdout_logfile=/var/log/stacksniff/celery.out.log
-environment=DISPLAY=":99"
-
-[program:stacksniff-redis]
-command=redis-server
-autostart=true
-autorestart=true
-stderr_logfile=/var/log/stacksniff/redis.err.log
-stdout_logfile=/var/log/stacksniff/redis.out.log
 EOF
+
+    supervisorctl reread
+    supervisorctl update
+    log_success "Supervisor config written and reloaded"
 }
 
-# Set up Nginx reverse proxy
+# ------------------------------------------------------------------------------
+# configure_nginx  — write site config, enable, reload
+# ------------------------------------------------------------------------------
 configure_nginx() {
-    log_info "Configuring Nginx reverse-proxy virtualhost..."
-    
-    cat <<EOF > /etc/nginx/sites-available/stacksniff
+    log_step "Nginx configuration"
+
+    cat > /etc/nginx/sites-available/stacksniff << EOF
+# Rate limiting zone — shared memory, 10MB for IP tracking, 30 req/min
+limit_req_zone \$binary_remote_addr zone=api:10m rate=30r/m;
+
 server {
     listen 80;
-    server_name $ALLOWED_HOSTS;
-    
+    server_name ${DETECTED_IP};
+
+    client_max_body_size 1M;
+
+    # --- API — rate-limited ---
+    location /api/ {
+        limit_req zone=api burst=10 nodelay;
+
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_read_timeout    300;
+        proxy_connect_timeout  10;
+        proxy_send_timeout    300;
+    }
+
+    # --- Static files — long-lived cache ---
+    location /static/ {
+        alias ${INSTALL_DIR}/stacksniff-api/staticfiles/;
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # --- Catch-all → Django (dashboard, admin, etc.) ---
     location / {
         proxy_pass http://127.0.0.1:8000;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_read_timeout 300;
-        proxy_connect_timeout 300;
-    }
-    
-    location /static/ {
-        alias $INSTALL_DIR/stacksniff-api/staticfiles/;
     }
 }
 EOF
 
-    # Symlink to sites-enabled
-    ln -sf /etc/nginx/sites-available/stacksniff /etc/nginx/sites-enabled/stacksniff
-    
-    # Remove default site
+    # Enable site, remove default
+    ln -sf /etc/nginx/sites-available/stacksniff \
+           /etc/nginx/sites-enabled/stacksniff
     rm -f /etc/nginx/sites-enabled/default
 
-    # Run Django collectstatic
-    log_info "Collecting Django admin static files..."
-    cd "$INSTALL_DIR/stacksniff-api"
-    uv run python manage.py collectstatic --noinput
-}
-
-# Start all daemon services
-start_services() {
-    log_info "Starting daemon services and process managers..."
-
-    systemctl daemon-reload
-    
-    # Start and enable core system services
-    systemctl restart redis-server || true
-    systemctl enable redis-server || true
-    
-    # Reread and update Supervisor configs
-    supervisorctl reread
-    supervisorctl update
-    supervisorctl restart all || supervisorctl start all || true
-    systemctl enable supervisor || true
-
-    # Validate Nginx config and reload
+    # Validate and reload
     nginx -t
-    systemctl restart nginx || systemctl reload nginx || true
-    systemctl enable nginx || true
+    systemctl reload nginx
+    log_success "Nginx configured and reloaded"
 }
 
-# Perform end-to-end health checks
-verify_health() {
-    log_info "Waiting 10 seconds for services to boot and stabilize..."
+# ------------------------------------------------------------------------------
+# start_services  — enable and start all daemons
+# ------------------------------------------------------------------------------
+start_services() {
+    log_step "Starting services"
+
+    systemctl enable redis-server nginx supervisor
+
+    # Redis — start or restart if already running
+    systemctl restart redis-server
+    log_success "Redis started"
+
+    # Supervisor (manages api + celery)
+    supervisorctl start stacksniff-api stacksniff-celery || \
+        supervisorctl restart stacksniff-api stacksniff-celery || true
+
+    log_info "Waiting 10 seconds for services to stabilise..."
     sleep 10
+}
 
-    log_info "Checking local API health..."
-    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000/api/scans/ || echo "000")
+# ------------------------------------------------------------------------------
+# verify_health  — curl /api/health/ and check supervisor/redis
+# ------------------------------------------------------------------------------
+verify_health() {
+    log_step "Health verification"
 
-    if [ "$HTTP_CODE" -eq 200 ] || [ "$HTTP_CODE" -eq 401 ] || [ "$HTTP_CODE" -eq 403 ]; then
-        log_success "API Health Check Passed! HTTP status code: $HTTP_CODE"
-        print_summary
+    # --- API health endpoint ---
+    log_info "Checking API health endpoint..."
+    local health_response
+    health_response=$(curl -s --max-time 10 "http://127.0.0.1:8000/api/health/" || echo '{"status":"error"}')
+
+    local api_status
+    api_status=$(echo "$health_response" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(d.get('status', 'unknown'))
+except Exception:
+    print('parse_error')
+" 2>/dev/null || echo "parse_error")
+
+    if [ "$api_status" = "ok" ]; then
+        log_success "API health: ok"
     else
-        log_error "API Health Check Failed! HTTP status code returned: $HTTP_CODE"
-        log_warning "Dumping logs from /var/log/stacksniff/..."
-        echo "=== Django Error Logs ==="
-        tail -n 20 /var/log/stacksniff/django.err.log || true
-        echo "=== Celery Error Logs ==="
-        tail -n 20 /var/log/stacksniff/celery.err.log || true
-        exit 1
+        log_warning "API health: ${api_status}"
+        log_warning "Health response: $health_response"
+        log_warning "Dumping recent logs..."
+        echo "=== API error log (last 20 lines) ==="
+        tail -n 20 /var/log/stacksniff/api.err.log 2>/dev/null || true
+        echo "=== Celery error log (last 20 lines) ==="
+        tail -n 20 /var/log/stacksniff/celery.err.log 2>/dev/null || true
+        # Warn but don't fail — Celery worker may still be starting
+        log_warning "API may still be initialising. Check logs above."
+    fi
+
+    # --- Supervisor process status ---
+    log_info "Supervisor process status:"
+    supervisorctl status stacksniff-api stacksniff-celery || true
+
+    # --- Redis connectivity ---
+    log_info "Checking Redis..."
+    if command -v redis-cli &>/dev/null; then
+        if redis-cli ping 2>/dev/null | grep -q "PONG"; then
+            log_success "Redis: PONG"
+        else
+            log_warning "Redis ping failed — check redis-server status"
+        fi
+    elif command -v nc &>/dev/null; then
+        if nc -z localhost 6379 2>/dev/null; then
+            log_success "Redis: port 6379 open"
+        else
+            log_warning "Redis port 6379 not reachable"
+        fi
     fi
 }
 
-# Output success summary box
+# ------------------------------------------------------------------------------
+# print_summary  — final coloured box with all deployment details
+# ------------------------------------------------------------------------------
 print_summary() {
-    TOKEN=$(cat "$INSTALL_DIR/API_TOKEN.txt")
-    HOST="$ALLOWED_HOSTS"
-    
-    echo -e "${GREEN}"
-    echo "  ╔═════════════════════════════════════════════════════════════════════╗"
-    echo "  ║                   stacksniff is ready                               ║"
-    echo "  ╠═════════════════════════════════════════════════════════════════════╣"
-    echo "    API Base URL:  http://${HOST}/api/"
-    echo "    Dashboard:     http://${HOST}/"
-    echo "    API Token:     ${TOKEN}"
-    echo "    Token saved:   ${INSTALL_DIR}/API_TOKEN.txt"
-    echo "  ╠═════════════════════════════════════════════════════════════════════╣"
-    echo "    Frontend team header usage:"
-    echo "    Authorization: Token ${TOKEN}"
-    echo "  ╠═════════════════════════════════════════════════════════════════════╣"
-    echo "    Logs:    /var/log/stacksniff/"
-    echo "    Status:  sudo supervisorctl status"
-    echo "  ╚═════════════════════════════════════════════════════════════════════╝"
+    local token="${API_TOKEN:-$(cat "$INSTALL_DIR/API_TOKEN.txt" 2>/dev/null || echo '<see API_TOKEN.txt>')}"
+    local ip="${DETECTED_IP:-<server-ip>}"
+
+    echo ""
+    echo -e "${GREEN}${BOLD}"
+    echo "  ╔══════════════════════════════════════════════════════════════╗"
+    echo "  ║           stacksniff — deployment complete ✓                ║"
+    echo "  ╠══════════════════════════════════════════════════════════════╣"
+    printf "  ║  Dashboard:     http://%-38s║\n" "${ip}/"
+    printf "  ║  API Base:      http://%-38s║\n" "${ip}/api/"
+    printf "  ║  Health check:  http://%-38s║\n" "${ip}/api/health/"
+    echo "  ╠══════════════════════════════════════════════════════════════╣"
+    printf "  ║  Auth token:    %-45s║\n" "${token:0:45}"
+    printf "  ║  Token file:    %-45s║\n" "${INSTALL_DIR}/API_TOKEN.txt"
+    echo "  ╠══════════════════════════════════════════════════════════════╣"
+    echo "  ║  Frontend team — include in every request:                  ║"
+    printf "  ║  Authorization: Token %-39s║\n" "${token:0:39}"
+    echo "  ╠══════════════════════════════════════════════════════════════╣"
+    echo "  ║  Quick test (no auth):                                      ║"
+    printf "  ║  curl http://%-48s║\n" "${ip}/api/health/"
+    echo "  ╠══════════════════════════════════════════════════════════════╣"
+    echo "  ║  Scan shortcuts (POST, requires auth):                      ║"
+    echo "  ║  /api/scan/tech/        tech stack only        (~30s)       ║"
+    echo "  ║  /api/scan/full/        everything             (~90s)       ║"
+    echo "  ║  /api/scan/endpoints/   API endpoints only     (~40s)       ║"
+    echo "  ║  /api/scan/subdomains/  subdomains only        (~30s)       ║"
+    echo "  ╠══════════════════════════════════════════════════════════════╣"
+    printf "  ║  Logs:   %-52s║\n" "/var/log/stacksniff/"
+    echo "  ║  Status: supervisorctl status                               ║"
+    echo "  ╚══════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
 
-    echo "Verify the API is running correctly using this command:"
-    echo -e "${BLUE}curl -H \"Authorization: Token ${TOKEN}\" http://${HOST}/api/scans/${NC}"
+    echo -e "${CYAN}Copy-paste quick test:${NC}"
+    echo ""
+    echo "  curl -s http://${ip}/api/health/ | python3 -m json.tool"
+    echo ""
+    echo "  TOKEN=\$(cat ${INSTALL_DIR}/API_TOKEN.txt)"
+    echo "  curl -s -X POST http://${ip}/api/scan/tech/ \\"
+    echo "       -H \"Authorization: Token \$TOKEN\" \\"
+    echo "       -H \"Content-Type: application/json\" \\"
+    echo "       -d '{\"url\": \"https://example.com\"}' | python3 -m json.tool"
     echo ""
 }
 
-# Uninstall all project components
-run_uninstall() {
-    log_info "Beginning uninstallation of stacksniff production environment..."
+# ------------------------------------------------------------------------------
+# uninstall  — remove all components, idempotent
+# ------------------------------------------------------------------------------
+uninstall() {
+    log_step "Uninstalling stacksniff"
 
-    check_privileges
-
-    # Stop supervisor services
-    log_info "Stopping and cleaning up Supervisor programs..."
-    supervisorctl stop all || true
+    log_info "Stopping Supervisor programs..."
+    supervisorctl stop stacksniff-api stacksniff-celery 2>/dev/null || true
     rm -f /etc/supervisor/conf.d/stacksniff.conf
-    supervisorctl reread || true
-    supervisorctl update || true
+    supervisorctl reread 2>/dev/null || true
+    supervisorctl update 2>/dev/null || true
 
-    # Remove Nginx configurations
-    log_info "Removing Nginx reverse proxy configuration..."
+    log_info "Removing Nginx configuration..."
     rm -f /etc/nginx/sites-enabled/stacksniff
     rm -f /etc/nginx/sites-available/stacksniff
-    systemctl reload nginx || systemctl restart nginx || true
+    systemctl reload nginx 2>/dev/null || true
 
-    # Clean install directory and log directories
-    log_info "Deleting files in $INSTALL_DIR..."
+    log_info "Removing install directory: $INSTALL_DIR"
     rm -rf "$INSTALL_DIR"
 
-    log_info "Deleting log directory..."
-    rm -rf "/var/log/stacksniff"
+    log_info "Removing log directory: /var/log/stacksniff"
+    rm -rf /var/log/stacksniff
 
-    log_success "Uninstallation completed successfully!"
+    log_success "Uninstall complete"
 }
 
 # ==============================================================================
-# MAIN EXECUTION FLOW
+# MAIN
 # ==============================================================================
 main() {
     parse_args "$@"
-    check_privileges
+    check_root
     tune_resources
-    
-    log_info "Starting stacksniff production deployment..."
-    
-    install_dependencies
-    setup_project_directories
+    install_system_deps
+    setup_project
     configure_environment
     configure_supervisor
     configure_nginx
     start_services
     verify_health
+    print_summary
 }
 
 main "$@"

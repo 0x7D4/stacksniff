@@ -582,7 +582,13 @@ async def test_subdomain_redirect_to_external_clears_tech() -> None:
 
 @pytest.mark.asyncio
 async def test_crtsh_retry_on_timeout() -> None:
-    """crt.sh query retries on failure and succeeds on 3rd attempt."""
+    """crt.sh query retries on failure and succeeds on 3rd attempt.
+
+    With concurrent racing, all three sources launch simultaneously.
+    HackerTarget times out immediately (1 call), CertSpotter also times out.
+    crt.sh retries 3 times via its own backoff before succeeding.
+    We verify crt.sh's internal retry logic by counting only crt.sh calls.
+    """
     store = _make_store()
     mapper = DomainMapper(
         base_url="https://aiori.in",
@@ -595,14 +601,17 @@ async def test_crtsh_retry_on_timeout() -> None:
     mock_resp.status_code = 200
     mock_resp.json.return_value = crtsh_payload
 
-    call_count = 0
+    crtsh_call_count = 0
 
     async def mock_get(url: str, **kwargs: Any) -> httpx.Response:
         if "hackertarget.com" in url:
             raise httpx.TimeoutException("HackerTarget timed out", request=MagicMock())
-        nonlocal call_count
-        call_count += 1
-        if call_count <= 2:
+        if "certspotter.com" in url:
+            raise httpx.TimeoutException("CertSpotter timed out", request=MagicMock())
+        # crt.sh: fail twice, then succeed
+        nonlocal crtsh_call_count
+        crtsh_call_count += 1
+        if crtsh_call_count <= 2:
             raise httpx.TimeoutException("Timeout", request=MagicMock())
         return mock_resp
 
@@ -611,16 +620,17 @@ async def test_crtsh_retry_on_timeout() -> None:
             with patch("asyncio.sleep", new=AsyncMock()) as mock_sleep:
                 subdomains = await mapper._fetch_crtsh_subdomains()
 
-    assert call_count == 3
+    # crt.sh should have been called exactly 3 times (2 failures + 1 success)
+    assert crtsh_call_count == 3
     assert subdomains == ["api.aiori.in"]
-    assert mock_sleep.call_count == 2
+    # crt.sh backoff sleeps: 2.0s and 4.0s
     mock_sleep.assert_any_call(2.0)
     mock_sleep.assert_any_call(4.0)
 
 
 @pytest.mark.asyncio
 async def test_crtsh_all_retries_fail() -> None:
-    """crt.sh query logs warning and returns empty subdomain list on 3 consecutive timeouts."""
+    """When all three CT sources fail, collect() returns empty subdomains and records an error."""
     store = _make_store()
     mapper = DomainMapper(
         base_url="https://aiori.in",
@@ -636,7 +646,8 @@ async def test_crtsh_all_retries_fail() -> None:
             result = await mapper.collect()
 
     assert result.data.get("internal_subdomains") == []
-    assert "crt.sh unavailable, subdomain discovery skipped" in result.errors
+    # Error message updated to reflect all-sources failure (concurrent racing)
+    assert any("subdomain sources" in e for e in result.errors)
 
 
 def test_extract_domain_from_pattern() -> None:
@@ -921,7 +932,14 @@ async def test_website_suffix_fallback_when_no_script_match() -> None:
 
 @pytest.mark.asyncio
 async def test_hackertarget_is_tried_first() -> None:
-    """Verify that HackerTarget is attempted first and, if successful, crt.sh is skipped."""
+    """Verify that when HackerTarget succeeds, its results are used and ct_source is correct.
+
+    With concurrent racing all three sources launch simultaneously; the one that
+    returns results first wins.  HackerTarget responds instantly here so it will
+    always win.  We verify the result metadata (ct_source) rather than asserting
+    that the other sources were never called — they ARE called concurrently but
+    are cancelled as soon as HackerTarget returns.
+    """
     mapper = DomainMapper(
         base_url="https://example.com",
         har_entries=[],
@@ -942,7 +960,8 @@ async def test_hackertarget_is_tried_first() -> None:
             mock_resp.status_code = 200
             mock_resp.json = lambda: [{"name_value": "api.example.com"}]
             return mock_resp
-        raise ValueError(f"Unexpected get URL: {url}")
+        # CertSpotter: timeout so it doesn't interfere
+        raise httpx.TimeoutException("CertSpotter not needed", request=MagicMock())
 
     async def mock_head(url, *args, **kwargs):
         mock_resp = MagicMock()
@@ -960,9 +979,8 @@ async def test_hackertarget_is_tried_first() -> None:
     assert subs[1]["subdomain"] == "dev.example.com"
     assert subs[1]["ct_source"] == "hackertarget"
 
-    # Verify crt.sh was not called
+    # HackerTarget was definitely called (it won the race)
     assert any("hackertarget.com" in u for u in get_urls)
-    assert not any("crt.sh" in u for u in get_urls)
 
 
 @pytest.mark.asyncio
@@ -1068,13 +1086,15 @@ async def test_all_sources_fail_returns_empty() -> None:
 
     assert len(subs) == 0
     assert len(mapper.errors) == 1
-    assert "crt.sh unavailable, subdomain discovery skipped" in mapper.errors[0]
+    # Error message updated: concurrent racing uses "All subdomain sources unavailable"
+    assert "subdomain sources" in mapper.errors[0]
     mock_warning.assert_called_once()
     warning_arg = mock_warning.call_args[0][0]
-    assert "All subdomain sources failed:" in warning_arg
+    # Warning mentions all three sources (error details from concurrent racing)
+    assert "All subdomain sources" in warning_arg
     assert "crt.sh" in warning_arg
-    assert "HackerTarget" in warning_arg
-    assert "CertSpotter" in warning_arg
+    assert "hackertarget" in warning_arg
+    assert "certspotter" in warning_arg
 
 
 @pytest.mark.asyncio

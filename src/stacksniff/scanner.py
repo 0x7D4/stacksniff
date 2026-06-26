@@ -67,7 +67,12 @@ class Scanner:
         scan_technologies: bool = True,
         scan_endpoints: bool = True,
     ) -> ScanResult:
-        """Scan a URL and return a structured ScanResult."""
+        """Scan a URL and return a structured ScanResult.
+
+        Collectors are launched *only* when their output is required by the
+        active scan flags, preventing unnecessary Chromium launches and JS
+        bundle downloads on focused scans such as subdomains-only requests.
+        """
         options = {
             "browser": browser,
             "crawl_depth": crawl_depth,
@@ -96,25 +101,7 @@ class Scanner:
 
         store = self._get_store(fingerprints_path)
 
-        # -------------------------------------------------------------------
-        # Phase 1: HTTP-only collectors
-        # -------------------------------------------------------------------
-        if progress_callback:
-            progress_callback("http", "started")
-
-        header_collector = HeaderCollector(timeout=timeout)
-        cookie_collector = CookieCollector(timeout=timeout)
-        html_collector = HtmlCollector(timeout=timeout)
-
-        # Run concurrently
-        header_task = header_collector.collect(url)
-        cookie_task = cookie_collector.collect(url)
-        html_task = html_collector.collect(url)
-
-        header_res, cookie_res, html_res = await asyncio.gather(
-            header_task, cookie_task, html_task, return_exceptions=True
-        )
-
+        # Helper: safe result extraction from gather output
         def _safe_res(res: Any) -> CollectorResult:
             if isinstance(res, CollectorResult):
                 return res
@@ -122,9 +109,52 @@ class Scanner:
                 logger.error("Collector raised an exception: %s", res, exc_info=res)
             return CollectorResult()
 
-        header_ok = _safe_res(header_res)
-        cookie_ok = _safe_res(cookie_res)
-        html_ok = _safe_res(html_res)
+        # Helper: empty result for skipped collectors
+        def _empty() -> CollectorResult:
+            return CollectorResult(data={}, errors=[])
+
+        # -------------------------------------------------------------------
+        # Phase 1: HTTP-only collectors  (run only what is needed)
+        # -------------------------------------------------------------------
+        #   HeaderCollector  — always needed (base URL + redirect resolution)
+        #   CookieCollector  — only needed for technology detection
+        #   HtmlCollector    — needed for tech detection OR endpoint detection
+        #                      (script_srcs feeds JsStaticCollector)
+        # -------------------------------------------------------------------
+        if progress_callback:
+            progress_callback("http", "started")
+
+        phase1_tasks: list[Any] = [
+            HeaderCollector(timeout=timeout).collect(url),
+        ]
+
+        # Track which index each optional collector lands at
+        task_map: dict[str, int] = {"header": 0}
+        idx = 1
+
+        if scan_technologies:
+            phase1_tasks.append(CookieCollector(timeout=timeout).collect(url))
+            task_map["cookie"] = idx
+            idx += 1
+
+        if scan_technologies or scan_endpoints:
+            phase1_tasks.append(HtmlCollector(timeout=timeout).collect(url))
+            task_map["html"] = idx
+            idx += 1
+
+        phase1_results = await asyncio.gather(*phase1_tasks, return_exceptions=True)
+
+        header_ok = _safe_res(phase1_results[task_map["header"]])
+        cookie_ok = (
+            _safe_res(phase1_results[task_map["cookie"]])
+            if "cookie" in task_map
+            else _empty()
+        )
+        html_ok = (
+            _safe_res(phase1_results[task_map["html"]])
+            if "html" in task_map
+            else _empty()
+        )
 
         headers = header_ok.data.get("headers", {})
         cookies = cookie_ok.data.get("cookies", {})
@@ -137,12 +167,20 @@ class Scanner:
         # Collect static DOM evidence
         dom_evidence = html_ok.data.get("dom", {}).copy()
 
-        # Run JsStaticCollector in a second gather - chained after HtmlCollector
-        js_static_collector = JsStaticCollector(script_srcs, base_url=url, timeout=timeout)
-        js_static_res_list = await asyncio.gather(
-            js_static_collector.collect(url), return_exceptions=True
-        )
-        js_static_ok = _safe_res(js_static_res_list[0])
+        # -------------------------------------------------------------------
+        # Phase 1.5: Static JS analysis — only needed for endpoint detection
+        #            Chained after HtmlCollector (needs script_srcs).
+        # -------------------------------------------------------------------
+        if scan_endpoints:
+            js_static_collector = JsStaticCollector(script_srcs, base_url=url, timeout=timeout)
+            js_static_res_list = await asyncio.gather(
+                js_static_collector.collect(url), return_exceptions=True
+            )
+            js_static_ok = _safe_res(js_static_res_list[0])
+            phases_completed.append("static")
+        else:
+            js_static_ok = _empty()
+
         static_endpoints = js_static_ok.data.get("static_endpoints", [])
 
         phases_completed.append("http")
@@ -150,13 +188,15 @@ class Scanner:
             progress_callback("http", "completed")
 
         # -------------------------------------------------------------------
-        # Phase 2: Headless browser collectors
+        # Phase 2: Headless browser collectors (run only what is needed)
+        #   JsCollector      — JS globals (window.React etc.) → tech detection
+        #   NetworkCollector — XHR/fetch interception + path probing → endpoints
         # -------------------------------------------------------------------
         js_globals: dict[str, str] = {}
         network_requests: list[NetworkRequest] = []
         probed_paths: list[NetworkRequest] = []
 
-        # Check if browser is requested and Playwright is installed
+        # Check whether playwright is available
         playwright_installed = False
         if browser:
             try:
@@ -166,23 +206,44 @@ class Scanner:
             except ImportError:
                 playwright_installed = False
 
-        if browser and playwright_installed:
+        need_js = browser and scan_technologies and playwright_installed
+        need_net = browser and scan_endpoints and playwright_installed
+
+        if need_js or need_net:
             if progress_callback:
                 progress_callback("browser", "started")
 
             from stacksniff.browser_pool import initialize_pool
             await initialize_pool()
 
-            js_collector = JsCollector(timeout=timeout)
-            network_collector = NetworkCollector(timeout=timeout, max_crawl_depth=crawl_depth)
+            phase2_tasks: list[Any] = []
+            phase2_map: dict[str, int] = {}
+            p2_idx = 0
 
-            js_task = js_collector.collect(url)
-            net_task = network_collector.collect(url)
+            if need_js:
+                phase2_tasks.append(JsCollector(timeout=timeout).collect(url))
+                phase2_map["js"] = p2_idx
+                p2_idx += 1
 
-            js_res, net_res = await asyncio.gather(js_task, net_task, return_exceptions=True)
+            if need_net:
+                phase2_tasks.append(
+                    NetworkCollector(timeout=timeout, max_crawl_depth=crawl_depth).collect(url)
+                )
+                phase2_map["net"] = p2_idx
+                p2_idx += 1
 
-            js_ok = _safe_res(js_res)
-            net_ok = _safe_res(net_res)
+            phase2_results = await asyncio.gather(*phase2_tasks, return_exceptions=True)
+
+            js_ok = (
+                _safe_res(phase2_results[phase2_map["js"]])
+                if "js" in phase2_map
+                else _empty()
+            )
+            net_ok = (
+                _safe_res(phase2_results[phase2_map["net"]])
+                if "net" in phase2_map
+                else _empty()
+            )
 
             js_globals = js_ok.data.get("js_globals", {})
 
@@ -229,14 +290,18 @@ class Scanner:
             phases_completed.append("browser")
             if progress_callback:
                 progress_callback("browser", "completed")
+        else:
+            # Neither browser collector ran; provide an empty net_ok for
+            # OpenAPI spec extraction below.
+            net_ok = _empty()
 
-        # Extract OpenAPI Spec details if available
+        # Extract OpenAPI Spec details if available (only when NetworkCollector ran)
         parsed_spec_data = None
         s_endpoints = []
         s_title = None
         s_version = None
         s_methods = {}
-        if browser and playwright_installed:
+        if need_net:
             parsed_spec_data = net_ok.data.get("parsed_spec")
             s_endpoints = net_ok.data.get("spec_endpoints", [])
             if parsed_spec_data:
@@ -293,10 +358,6 @@ class Scanner:
 
         # -------------------------------------------------------------------
         # Phase 3.5: SecLists-based framework path probing  +  Domain mapping
-        # Run both concurrently.
-        # -------------------------------------------------------------------
-        # -------------------------------------------------------------------
-        # Phase 3.5: SecLists-based framework path probing  +  Domain mapping
         # Run both concurrently if enabled.
         # -------------------------------------------------------------------
         if progress_callback:
@@ -304,7 +365,7 @@ class Scanner:
 
         # Collect HAR entries produced during browser phase
         har_entries: list[dict[str, Any]] = []
-        if browser and playwright_installed:
+        if need_net:
             har_entries = net_ok.data.get("har_entries", [])
 
         gather_tasks = []

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import threading
+import time
 
 from celery import shared_task
 from celery.signals import worker_process_init
@@ -9,6 +10,14 @@ from django.utils import timezone
 from scanner.models import ScanJob, ScanResult
 
 logger = logging.getLogger(__name__)
+
+# Use gevent's unpatched Thread to ensure the asyncio background event loop
+# runs in a real native OS thread on Windows, preventing deadlocks with ProactorEventLoop.
+try:
+    from gevent.monkey import get_original
+    NativeThread = get_original("threading", "Thread")
+except (ImportError, KeyError):
+    NativeThread = threading.Thread
 
 # Persistent background event loop and thread
 _background_loop = None
@@ -22,7 +31,7 @@ def get_background_loop() -> asyncio.AbstractEventLoop:
     with _loop_lock:
         if _background_loop is None:
             _background_loop = asyncio.new_event_loop()
-            _loop_thread = threading.Thread(
+            _loop_thread = NativeThread(
                 target=_background_loop.run_forever,
                 name="StacksniffEventLoopThread",
                 daemon=True,
@@ -50,7 +59,12 @@ def init_browser_pool(**kwargs) -> None:
 
 @shared_task(bind=True)
 def run_scan(self, job_id: str, force_rescan: bool = False) -> str:
-    """Execute a scan job asynchronously using the background event loop."""
+    """Execute a scan job asynchronously.
+    
+    If running under gevent monkey patching, uses a clean Python subprocess to
+    avoid the Windows ProactorEventLoop deadlock. Otherwise, runs in-process on the
+    persistent background event loop thread (ensuring unit tests and mocks work).
+    """
     try:
         job = ScanJob.objects.get(id=job_id)
     except ScanJob.DoesNotExist:
@@ -71,65 +85,159 @@ def run_scan(self, job_id: str, force_rescan: bool = False) -> str:
     scan_subdomains = options.get("scan_subdomains", True)
     scan_endpoints = options.get("scan_endpoints", True)
 
-    loop = get_background_loop()
-
-    # Async wrapper to initialize and run the scan
-    async def perform_scan():
-        from stacksniff.scanner import Scanner
-
-        scanner = Scanner()
-        return await scanner.scan(
-            job.url,
-            browser=browser,
-            timeout=timeout,
-            cache_bypass=force_rescan,
-            subdomains=scan_subdomains,
-            scan_technologies=scan_technologies,
-            scan_endpoints=scan_endpoints,
-        )
-
-    # Schedule the coroutine on the background event loop
-    future = asyncio.run_coroutine_threadsafe(perform_scan(), loop)
-
-    # Calculate a generous hard timeout to allow all sequential phases,
-    # retries, and browser tasks to finish. The total scan can take
-    # significantly longer than a single collector timeout.
+    # Calculate timeout
     hard_timeout = max(timeout * 5, 300.0)
 
+    # Check if gevent monkey patching is active
+    is_gevent = False
     try:
-        scan_result = future.result(timeout=hard_timeout)
+        from gevent.monkey import is_module_patched
+        is_gevent = is_module_patched("socket")
+    except ImportError:
+        pass
 
-        # Convert to dictionary representation for database storage
-        res_dict = scan_result.to_dict()
+    if not is_gevent:
+        # Run in-process using the persistent background event loop
+        loop = get_background_loop()
 
-        # Update ScanJob to completed
-        job.status = "completed"
-        job.completed_at = timezone.now()
-        job.save()
+        async def perform_scan():
+            from stacksniff.scanner import Scanner
+            scanner = Scanner()
+            return await scanner.scan(
+                job.url,
+                browser=browser,
+                timeout=timeout,
+                cache_bypass=force_rescan,
+                subdomains=scan_subdomains,
+                scan_technologies=scan_technologies,
+                scan_endpoints=scan_endpoints,
+            )
 
-        # Create linked ScanResult
-        ScanResult.objects.create(
-            job=job,
-            url=scan_result.url,
-            scan_time=scan_result.scan_time,
-            duration_seconds=scan_result.meta.duration_seconds,
-            technologies=res_dict.get("technologies", []),
-            api_endpoints=res_dict.get("api_endpoints", []),
-            runtime_dependencies=res_dict.get("runtime_dependencies", []),
-            discovered_subdomains=res_dict.get("discovered_subdomains", []),
-            openapi_spec_found=scan_result.openapi_spec_found,
-            phases_completed=scan_result.meta.phases_completed,
-            rules_count=scan_result.meta.rules_count,
-            fingerprints_version=scan_result.meta.fingerprints_version,
+        # Schedule the coroutine on the background event loop
+        future = asyncio.run_coroutine_threadsafe(perform_scan(), loop)
+
+        try:
+            scan_result = future.result(timeout=hard_timeout)
+            res_dict = scan_result.to_dict()
+
+            # Update ScanJob to completed
+            job.status = "completed"
+            job.completed_at = timezone.now()
+            job.save()
+
+            # Create linked ScanResult
+            ScanResult.objects.create(
+                job=job,
+                url=scan_result.url,
+                scan_time=scan_result.scan_time,
+                duration_seconds=scan_result.meta.duration_seconds,
+                technologies=res_dict.get("technologies", []),
+                api_endpoints=res_dict.get("api_endpoints", []),
+                runtime_dependencies=res_dict.get("runtime_dependencies", []),
+                discovered_subdomains=res_dict.get("discovered_subdomains", []),
+                openapi_spec_found=scan_result.openapi_spec_found,
+                phases_completed=scan_result.meta.phases_completed,
+                rules_count=scan_result.meta.rules_count,
+                fingerprints_version=scan_result.meta.fingerprints_version,
+            )
+            return "completed"
+        except Exception as e:
+            logger.exception("Error scanning URL %s for job %s: %s", job.url, job.id, e)
+            job.status = "failed"
+            job.completed_at = timezone.now()
+            job.error_message = str(e) or e.__class__.__name__
+            job.save()
+            return "failed"
+
+    else:
+        # Subprocess script that executes the scan and prints the result JSON
+        script = f"""
+import asyncio
+import sys
+import json
+from stacksniff.scanner import Scanner
+
+async def main():
+    try:
+        scanner = Scanner()
+        res = await scanner.scan(
+            {repr(job.url)},
+            browser={browser},
+            timeout={timeout},
+            cache_bypass={force_rescan},
+            subdomains={scan_subdomains},
+            scan_technologies={scan_technologies},
+            scan_endpoints={scan_endpoints}
         )
-
-        return "completed"
-
+        print(res.to_json())
     except Exception as e:
-        logger.exception("Error scanning URL %s for job %s: %s", job.url, job.id, e)
-        # Update ScanJob to failed
-        job.status = "failed"
-        job.completed_at = timezone.now()
-        job.error_message = str(e) or e.__class__.__name__
-        job.save()
-        return "failed"
+        print(json.dumps({{"error": str(e)}}), file=sys.stderr)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+"""
+
+        try:
+            # Import Popen cooperatively if gevent is running
+            try:
+                from gevent.subprocess import Popen, PIPE
+            except ImportError:
+                from subprocess import Popen, PIPE
+            import sys
+            import json
+
+            proc = Popen([sys.executable, "-c", script], stdout=PIPE, stderr=PIPE, text=True)
+            try:
+                stdout, stderr = proc.communicate(timeout=hard_timeout)
+            except Exception:
+                proc.kill()
+                stdout, stderr = proc.communicate()
+                raise TimeoutError("Scan process timed out")
+
+            if proc.returncode != 0:
+                error_msg = stderr.strip() or stdout.strip() or f"Exit code {proc.returncode}"
+                try:
+                    err_data = json.loads(error_msg)
+                    if "error" in err_data:
+                        error_msg = err_data["error"]
+                except Exception:
+                    pass
+                raise RuntimeError(error_msg)
+
+            res_dict = json.loads(stdout)
+            if "error" in res_dict:
+                raise RuntimeError(res_dict["error"])
+
+            # Update ScanJob to completed
+            job.status = "completed"
+            job.completed_at = timezone.now()
+            job.save()
+
+            # Create linked ScanResult
+            meta = res_dict.get("meta", {})
+            ScanResult.objects.create(
+                job=job,
+                url=res_dict.get("url", job.url),
+                scan_time=res_dict.get("scan_time", timezone.now().isoformat()),
+                duration_seconds=meta.get("duration_seconds", 0.0),
+                technologies=res_dict.get("technologies", []),
+                api_endpoints=res_dict.get("api_endpoints", []),
+                runtime_dependencies=res_dict.get("runtime_dependencies", []),
+                discovered_subdomains=res_dict.get("discovered_subdomains", []),
+                openapi_spec_found=res_dict.get("openapi_spec_found", False),
+                phases_completed=meta.get("phases_completed", []),
+                rules_count=meta.get("rules_count", 0),
+                fingerprints_version=meta.get("fingerprints_version", ""),
+            )
+
+            return "completed"
+
+        except Exception as e:
+            logger.exception("Error scanning URL %s for job %s: %s", job.url, job.id, e)
+            # Update ScanJob to failed
+            job.status = "failed"
+            job.completed_at = timezone.now()
+            job.error_message = str(e) or e.__class__.__name__
+            job.save()
+            return "failed"

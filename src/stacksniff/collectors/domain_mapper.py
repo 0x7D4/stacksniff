@@ -534,49 +534,57 @@ class DomainMapper:
         return internal_subs
 
     async def _fetch_crtsh_subdomains(self) -> list[str]:
-        """Try each source in order, stop when one returns results.
+        """Race all three CT sources concurrently; use the first that returns results.
 
-        Sets self._ct_source to the name of the source that succeeded.
-        If all sources fail, log warning with all three source errors and return empty list.
+        All three sources are launched simultaneously.  As soon as one returns
+        a non-empty list, the remaining tasks are cancelled.  If none return
+        results, a warning is logged and an empty list is returned.
+
+        Sets ``self._ct_source`` to the name of the winning source.
         """
-        self._ct_source = "hackertarget"
-        errors = []
+        sources: list[tuple[str, asyncio.Task[list[str]]]] = [
+            ("hackertarget", asyncio.ensure_future(self._fetch_hackertarget_subdomains())),
+            ("crt.sh",       asyncio.ensure_future(self._fetch_crtsh_subdomains_inner())),
+            ("certspotter",  asyncio.ensure_future(self._fetch_certspotter_subdomains())),
+        ]
+        pending: set[asyncio.Task[list[str]]] = {t for _, t in sources}
+        # name look-up: task -> source_name
+        task_name: dict[asyncio.Task[list[str]], str] = {t: n for n, t in sources}
 
-        # Source 1: HackerTarget
-        try:
-            subdomains = await self._fetch_hackertarget_subdomains()
-            if subdomains:
-                self._ct_source = "hackertarget"
-                return subdomains
-            errors.append("HackerTarget returned 0 subdomains")
-        except Exception as e:
-            errors.append(f"HackerTarget error: {e}")
+        errors: list[str] = []
+        result: list[str] = []
 
-        # Source 2: crt.sh
-        try:
-            subdomains = await self._fetch_crtsh_subdomains_inner()
-            if subdomains:
-                self._ct_source = "crt.sh"
-                return subdomains
-            errors.append("crt.sh returned 0 subdomains")
-        except Exception as e:
-            errors.append(f"crt.sh error: {e}")
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                source = task_name[task]
+                exc = task.exception()
+                if exc is not None:
+                    errors.append(f"{source} error: {exc}")
+                    logger.debug("DomainMapper: %s failed: %s", source, exc)
+                    continue
+                subdomains = task.result()
+                if subdomains:
+                    # Got results — cancel remaining and return immediately
+                    for t in pending:
+                        t.cancel()
+                    # Await cancellations silently
+                    if pending:
+                        await asyncio.gather(*pending, return_exceptions=True)
+                    self._ct_source = source
+                    logger.debug(
+                        "DomainMapper: %s returned %d subdomains for %s",
+                        source, len(subdomains), self._target_domain,
+                    )
+                    return subdomains
+                else:
+                    errors.append(f"{source} returned 0 subdomains")
 
-        # Source 3: CertSpotter
-        try:
-            subdomains = await self._fetch_certspotter_subdomains()
-            if subdomains:
-                self._ct_source = "certspotter"
-                return subdomains
-            errors.append("CertSpotter returned 0 subdomains")
-        except Exception as e:
-            errors.append(f"CertSpotter error: {e}")
-
-        # If we got here, all three failed or returned empty.
-        warning_msg = f"All subdomain sources failed: {'; '.join(errors)}"
+        # All three finished with no results
+        warning_msg = f"All subdomain sources failed/empty: {'; '.join(errors)}"
         logger.warning(warning_msg)
-        self.errors.append("crt.sh unavailable, subdomain discovery skipped")
-        return []
+        self.errors.append("All subdomain sources unavailable, subdomain discovery skipped")
+        return result
 
     async def _fetch_crtsh_subdomains_inner(self) -> list[str]:
         """Query crt.sh and return de-duped, filtered subdomains."""
