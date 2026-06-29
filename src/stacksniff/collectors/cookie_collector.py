@@ -71,7 +71,7 @@ class CookieCollector:
                 max_redirects=self._max_redirects,
                 transport=transport,
                 headers={"User-Agent": self._user_agent},
-                verify=True,
+                verify=False,
             ) as client:
                 response = await client.get(url)
 

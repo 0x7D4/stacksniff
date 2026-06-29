@@ -102,7 +102,7 @@ class HeaderCollector:
             "max_redirects": self._max_redirects,
             "transport": transport,
             "headers": {"User-Agent": self._user_agent},
-            "verify": True,
+            "verify": False,
         }
 
         try:

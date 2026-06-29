@@ -446,6 +446,7 @@ class FrameworkProber:
                 timeout=self._timeout,
                 follow_redirects=False,
                 headers={"User-Agent": "stacksniff/1.0 (framework-prober)"},
+                verify=False,
             ) as client:
                 resp = await client.get(canary_url)
                 if resp.status_code in (301, 302):
@@ -725,6 +726,7 @@ class FrameworkProber:
             timeout=self._timeout,
             follow_redirects=False,
             headers={"User-Agent": "stacksniff/1.0 (framework-prober)"},
+            verify=False,
         ) as client:
             for batch_start in range(0, len(capped_paths), _BATCH_SIZE):
                 batch = capped_paths[batch_start : batch_start + _BATCH_SIZE]

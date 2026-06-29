@@ -120,6 +120,7 @@ CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = TIME_ZONE
+CELERY_TASK_ALWAYS_EAGER = env.bool("CELERY_TASK_ALWAYS_EAGER", default=False)
 
 # Windows compatibility: Celery's default prefork pool (billiard) is unstable on Windows,
 # leading to WinError 5 Access Denied / WinError 6 Invalid Handle crashes during process setup.

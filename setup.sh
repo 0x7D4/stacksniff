@@ -290,7 +290,10 @@ EOF
     admin_password=$(openssl rand -hex 10)
 
     local admin_status
-    admin_status=$(uv run python manage.py shell -c "
+    admin_status=$(uv run python -c "
+import os, django
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings.prod')
+django.setup()
 from django.contrib.auth import get_user_model
 User = get_user_model()
 if not User.objects.filter(username='admin').exists():
@@ -308,7 +311,10 @@ else:
     fi
 
     # --- Generate/retrieve API token ---
-    API_TOKEN=$(uv run python manage.py shell -c "
+    API_TOKEN=$(uv run python -c "
+import os, django
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings.prod')
+django.setup()
 from django.contrib.auth import get_user_model
 from rest_framework.authtoken.models import Token
 User = get_user_model()
@@ -342,7 +348,7 @@ command=${venv_bin}/gunicorn config.asgi:application \
     --timeout 120 \
     --graceful-timeout 30
 directory=${INSTALL_DIR}/stacksniff-api
-environment=PATH="${venv_bin}:%%(ENV_PATH)s"
+environment=PATH="${venv_bin}:%(ENV_PATH)s",DJANGO_SETTINGS_MODULE="config.settings.prod"
 user=root
 autostart=true
 autorestart=true
@@ -358,7 +364,7 @@ command=${venv_bin}/celery -A config worker \
     --without-gossip \
     --without-mingle
 directory=${INSTALL_DIR}/stacksniff-api
-environment=PATH="${venv_bin}:%%(ENV_PATH)s"
+environment=PATH="${venv_bin}:%(ENV_PATH)s",DJANGO_SETTINGS_MODULE="config.settings.prod"
 user=root
 autostart=true
 autorestart=true

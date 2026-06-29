@@ -174,6 +174,7 @@ class ScanJobViewSet(viewsets.ModelViewSet):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         job = create_scan_job(serializer.validated_data)
+        job.refresh_from_db()
 
         # Serialize and return the created job
         job_serializer = ScanJobSerializer(job)
@@ -302,6 +303,7 @@ class ShortcutScanView(AsyncAPIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         job = await async_create_scan_job(serializer.validated_data)
+        await job.arefresh_from_db()
 
         # Serialize in a thread: ScanJobSerializer accesses job.result (lazy
         # OneToOneField reverse relation), which triggers a sync DB lookup.
