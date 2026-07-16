@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from stacksniff.browser_pool import BrowserPool, get_pool, shutdown_pool
+from stacksniff.browser_pool import BrowserPool, get_pool
 
 
 @pytest.fixture(autouse=True)

@@ -1,0 +1,14 @@
+$kind: http-request
+description: Run full scanner shortcut (all collectors active).
+url: "{{base_url}}/api/scan/full/"
+method: POST
+headers:
+  Authorization: Token {{token}}
+  Content-Type: application/json
+body:
+  type: text
+  content: |-
+    {
+      "url": "https://stripe.com"
+    }
+order: 2000

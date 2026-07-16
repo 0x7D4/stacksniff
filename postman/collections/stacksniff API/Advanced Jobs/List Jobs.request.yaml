@@ -1,0 +1,13 @@
+$kind: http-request
+description: List and filter scan jobs.
+url: "{{base_url}}/api/scans/?status=completed"
+method: GET
+headers:
+  Authorization: Token {{token}}
+queryParams:
+  - key: status
+    value: completed
+  - key: url
+    value: stripe
+    disabled: true
+order: 2000

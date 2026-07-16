@@ -1,10 +1,11 @@
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
 import pytest
 import yaml
 
-from stacksniff.updater_seclists import fetch_seclists, normalize_filename, matches_technology
+from stacksniff.updater_seclists import fetch_seclists, matches_technology, normalize_filename
 
 
 def test_normalize_filename() -> None:
@@ -168,14 +169,14 @@ def test_matches_technology_unit_cases() -> None:
     assert matches_technology("coldfusion", "adobe coldfusion")
     assert matches_technology("django", "django")
     assert matches_technology("django", "django cms")
-    
+
     # Exclude generic wordlists
     assert not matches_technology("big", "bigcommerce")
     assert not matches_technology("big", "f5 bigip")
     assert not matches_technology("common", "common ground")
     assert not matches_technology("medium", "medium")
     assert not matches_technology("raft", "raft")
-    
+
     # Custom aliased stems (e.g. wp -> wordpress)
     assert matches_technology(normalize_filename("wp-plugins.fuzz.txt"), "wordpress")
     assert matches_technology(normalize_filename("wp-themes.fuzz.txt"), "wordpress")

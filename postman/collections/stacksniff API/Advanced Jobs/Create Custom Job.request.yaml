@@ -1,0 +1,20 @@
+$kind: http-request
+description: Create a scan job with full control over runtime options.
+url: "{{base_url}}/api/scans/"
+method: POST
+headers:
+  Authorization: Token {{token}}
+  Content-Type: application/json
+body:
+  type: text
+  content: |-
+    {
+      "url": "https://stripe.com",
+      "browser": true,
+      "timeout": 30.0,
+      "force_rescan": false,
+      "scan_technologies": true,
+      "scan_subdomains": false,
+      "scan_endpoints": true
+    }
+order: 1000

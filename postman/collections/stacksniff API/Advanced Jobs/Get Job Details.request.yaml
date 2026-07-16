@@ -1,0 +1,7 @@
+$kind: http-request
+description: Retrieve status and metadata for a specific job.
+url: "{{base_url}}/api/scans/{{scan_id}}/"
+method: GET
+headers:
+  Authorization: Token {{token}}
+order: 3000

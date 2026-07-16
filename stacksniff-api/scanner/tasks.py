@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import logging
 import threading
 import time
@@ -126,6 +127,7 @@ def run_scan(self, job_id: str, force_rescan: bool = False) -> str:
             job.save()
 
             # Create linked ScanResult
+            raw_evidence = dataclasses.asdict(scan_result.collected_evidence) if scan_result.collected_evidence else {}
             ScanResult.objects.create(
                 job=job,
                 url=scan_result.url,
@@ -139,6 +141,7 @@ def run_scan(self, job_id: str, force_rescan: bool = False) -> str:
                 phases_completed=scan_result.meta.phases_completed,
                 rules_count=scan_result.meta.rules_count,
                 fingerprints_version=scan_result.meta.fingerprints_version,
+                raw_evidence=raw_evidence,
             )
             return "completed"
         except Exception as e:
@@ -153,8 +156,9 @@ def run_scan(self, job_id: str, force_rescan: bool = False) -> str:
         # Subprocess script that executes the scan and prints the result JSON
         script = f"""
 import asyncio
-import sys
+import dataclasses
 import json
+import sys
 from stacksniff.scanner import Scanner
 
 async def main():
@@ -169,7 +173,10 @@ async def main():
             scan_technologies={scan_technologies},
             scan_endpoints={scan_endpoints}
         )
-        print(res.to_json())
+        evidence = {{}}
+        if res.collected_evidence is not None:
+            evidence = dataclasses.asdict(res.collected_evidence)
+        print(json.dumps({{"result": res.to_dict(), "evidence": evidence}}))
     except Exception as e:
         print(json.dumps({{"error": str(e)}}), file=sys.stderr)
         sys.exit(1)
@@ -205,16 +212,18 @@ if __name__ == "__main__":
                     pass
                 raise RuntimeError(error_msg)
 
-            res_dict = json.loads(stdout)
-            if "error" in res_dict:
-                raise RuntimeError(res_dict["error"])
+            envelope = json.loads(stdout)
+            if "error" in envelope:
+                raise RuntimeError(envelope["error"])
+            res_dict = envelope["result"]
+            raw_evidence = envelope.get("evidence", {})
 
             # Update ScanJob to completed
             job.status = "completed"
             job.completed_at = timezone.now()
             job.save()
 
-            # Create linked ScanResult
+            # Create linked ScanResult (gevent/production path)
             meta = res_dict.get("meta", {})
             ScanResult.objects.create(
                 job=job,
@@ -229,6 +238,7 @@ if __name__ == "__main__":
                 phases_completed=meta.get("phases_completed", []),
                 rules_count=meta.get("rules_count", 0),
                 fingerprints_version=meta.get("fingerprints_version", ""),
+                raw_evidence=raw_evidence,
             )
 
             return "completed"

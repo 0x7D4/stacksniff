@@ -1,0 +1,14 @@
+$kind: http-request
+description: Run API endpoints detection shortcut.
+url: "{{base_url}}/api/scan/endpoints/"
+method: POST
+headers:
+  Authorization: Token {{token}}
+  Content-Type: application/json
+body:
+  type: text
+  content: |-
+    {
+      "url": "https://stripe.com"
+    }
+order: 3000

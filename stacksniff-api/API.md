@@ -75,6 +75,34 @@ const headers = {
 
 ---
 
+## Testing with Postman (Walkthrough)
+
+A complete, pre-configured Postman Collection is available in the repository root at `stacksniff_postman_collection.json`.
+
+### 1. Import the Collection
+1. Open Postman.
+2. Click **Import** in the top-left corner.
+3. Select or drag the `stacksniff_postman_collection.json` file from the workspace root directory.
+4. Click **Import**. You will see the **stacksniff API** collection in the sidebar.
+
+### 2. Configure Collection Variables
+1. Click the parent folder **stacksniff API** in the sidebar.
+2. Go to the **Variables** tab in the main editor pane.
+3. Set your variables:
+   - `base_url`: `http://127.0.0.1:8000` (for localhost development).
+   - `token`: (Optional in local `DEBUG=True` mode, otherwise paste your generated DRF Token).
+4. Save the collection variables (**Ctrl + S**).
+
+### 3. Run a Scan & Check Results
+1. **Health Check:** Expand **Health** and click **Send** on **Health Check** (unauthenticated). Verify that `"database": "ok"` and `"celery": "ok"`.
+2. **Start Scan:** Expand **Shortcut Scans** and click **Send** on **Create Tech Scan** (feel free to modify the `url` key in the request **Body** tab).
+3. **Get Scan ID:** Copy the returned `"id"` (UUID) from the JSON response.
+4. **Update Variable:** Paste this UUID into the `scan_id` field in your Collection Variables, or directly replace the `{{scan_id}}` parameter in subsequent request URLs.
+5. **Poll Status:** Go to **Advanced Jobs** -> **Get Job Details** and click **Send**. Wait a few seconds and repeat until `"status"` changes from `"pending"` or `"running"` to `"completed"`.
+6. **Browse Results:** Expand the **Job Results** folder and query sub-resources like `/technologies/`, `/endpoints/`, or `/evidence/` to inspect the results.
+
+---
+
 ## Scan Endpoints (Shortcuts — use these)
 
 These one-shot endpoints are the primary interface. Send a URL, get a job ID back, then poll until done.
@@ -293,6 +321,50 @@ Array of `Subdomain` objects discovered via CT logs and DNS.
 ### GET /api/scans/{id}/dependencies/
 Array of `RuntimeDependency` objects (third-party scripts, CDNs, analytics, etc.).
 
+### GET /api/scans/{id}/evidence/
+
+Returns the raw `CollectedEvidence` gathered by all collectors — before any
+fingerprint matching. Intended for the hybrid React client, which runs
+`FingerprintMatcher` + `ApiDetector` locally in a Web Worker.
+
+```bash
+curl -s http://<server-ip>/api/scans/<id>/evidence/ \
+     -H "Authorization: Token $TOKEN"
+```
+
+```json
+{
+  "raw_evidence": {
+    "headers":               { "Server": "nginx", "X-Powered-By": "PHP/8.1" },
+    "cookies":               { "PHPSESSID": "abc123" },
+    "html":                  "<html>...",
+    "meta_tags":             { "generator": "WordPress 6.4" },
+    "script_srcs":           ["https://example.com/wp-includes/js/jquery.min.js"],
+    "link_hrefs":            [],
+    "js_globals":            { "wp": "[object Object]" },
+    "dom":                   {},
+    "network_requests":      [...],
+    "probed_paths":          [...],
+    "framework_endpoints":   [
+      {
+        "url": "https://example.com/wp-admin/",
+        "status_code": 200,
+        "status_label": "exposed",
+        "content_type": "text/html; charset=UTF-8",
+        "confidence": 0.95,
+        "source_wordlist": "wordpress.txt",
+        "implied_techs": ["wordpress"]
+      }
+    ],
+    "runtime_dependencies":  [...],
+    "discovered_subdomains": [...]
+  }
+}
+```
+
+> **Note:** `html` is returned untruncated. nginx gzip compression handles wire
+> cost. CLI-side and client-side matching see identical evidence.
+
 ---
 
 ## Response Schemas
@@ -332,6 +404,7 @@ interface ScanResult {
   api_endpoints:          ApiEndpoint[];
   runtime_dependencies:   RuntimeDependency[];
   discovered_subdomains:  Subdomain[];
+  raw_evidence?:          CollectedEvidence; // omitted by default (use /api/scans/{id}/evidence/ endpoint)
   openapi_spec_found:     boolean;
   phases_completed:       string[];     // e.g. ["http", "browser"]
   rules_count:            number;       // Total fingerprint rules evaluated
@@ -373,9 +446,15 @@ interface ApiEndpoint {
 
 ```typescript
 interface Subdomain {
-  domain:     string;    // e.g. "api.example.com"
-  category:   string;    // e.g. "api_host", "cdn", "mail"
-  matched_by: string;    // e.g. "crt_sh", "hackertarget", "api_endpoint"
+  subdomain:          string;        // e.g. "api.example.com"
+  full_url:           string;        // e.g. "https://api.example.com"
+  status_code:        number;        // HTTP response status (e.g. 200, 301, 403)
+  content_type:       string | null;
+  redirect_location:  string | null; // target location if redirect
+  response_time_ms:   number;        // response time in milliseconds
+  detected_tech:      string | null; // e.g. "Nginx"
+  detected_category:  string | null; // e.g. "web-servers"
+  ct_source?:         string | null; // CT log source (e.g. "crt.sh")
 }
 ```
 
@@ -383,9 +462,57 @@ interface Subdomain {
 
 ```typescript
 interface RuntimeDependency {
-  domain:     string;    // e.g. "google-analytics.com"
-  category:   string;    // e.g. "analytics", "cdn", "fonts"
-  matched_by: string;    // e.g. "script_src", "link_rel"
+  domain:             string;        // e.g. "cdn.jsdelivr.net"
+  category:           string;        // Wappalyzer category name or "Unclassified"
+  technology_name:    string | null; // e.g. "jsDelivr"
+  resource_types:     string[];      // e.g. ["script", "stylesheet"]
+  request_count:      number;
+  example_urls:       string[];      // list of resource URLs requested
+}
+```
+
+### CollectedEvidence
+
+Returned by `GET /api/scans/{id}/evidence/` inside the `raw_evidence` key.
+This is the complete collector output before fingerprint analysis.
+
+```typescript
+interface CollectedEvidence {
+  headers:               Record<string, string>;
+  cookies:               Record<string, string>;
+  html:                  string;                         // full page HTML, untruncated
+  meta_tags:             Record<string, string>;
+  script_srcs:           string[];
+  link_hrefs:            string[];
+  js_globals:            Record<string, string>;         // window.* globals captured by browser
+  dom:                   Record<string, object[]>;       // DOM selector → element list
+  network_requests:      NetworkRequest[];               // XHR / fetch calls captured by browser
+  probed_paths:          NetworkRequest[];               // framework probe results
+  static_endpoints:      string[];
+  spec_endpoints:        string[];                       // OpenAPI / Swagger URLs found
+  framework_endpoints:   FrameworkEndpoint[];            // routes from framework-specific probes
+  runtime_dependencies:  object[];                       // third-party scripts/CDNs
+  discovered_subdomains: object[];
+}
+
+interface FrameworkEndpoint {
+  url:                 string;
+  status_code:         number;
+  status_label:        string;                         // e.g. "exposed", "forbidden", "redirect"
+  content_type:        string | null;
+  confidence:          number;
+  source_wordlist:     string;                         // e.g. "wordpress.txt"
+  top_level_keys?:     string[];                       // keys present in JSON response body
+  redirect_location?:  string;                         // present for 3xx responses
+  implied_techs:       string[];                       // techs implied by the wordlist (Phase 4 matching)
+}
+
+interface NetworkRequest {
+  url:              string;
+  method:           string;
+  resource_type:    string;
+  response_status?: number;
+  response_headers?: Record<string, string>;
 }
 ```
 

@@ -1,0 +1,7 @@
+$kind: http-request
+description: Retrieve external domain dependencies.
+url: "{{base_url}}/api/scans/{{scan_id}}/dependencies/"
+method: GET
+headers:
+  Authorization: Token {{token}}
+order: 5000

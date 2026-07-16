@@ -1,0 +1,7 @@
+$kind: collection
+name: stacksniff API
+description: Comprehensive Postman collection for testing the stacksniff Django REST API service.
+variables:
+  base_url: http://127.0.0.1:8000
+  token: your_drf_token_here
+  scan_id: e4b3e83b-ea0e-436d-b8d4-5fe5c2a13809

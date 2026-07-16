@@ -1,0 +1,8 @@
+$kind: http-request
+name: Cancel / Delete Job
+description: Revoke Celery task and delete a job database entry.
+url: "{{base_url}}/api/scans/{{scan_id}}/"
+method: DELETE
+headers:
+  Authorization: Token {{token}}
+order: 4000

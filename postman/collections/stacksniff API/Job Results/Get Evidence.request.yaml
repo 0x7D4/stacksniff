@@ -1,0 +1,7 @@
+$kind: http-request
+description: Retrieve full raw collector evidence (unfiltered) for client-side matching.
+url: "{{base_url}}/api/scans/{{scan_id}}/evidence/"
+method: GET
+headers:
+  Authorization: Token {{token}}
+order: 6000

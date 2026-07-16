@@ -7,6 +7,7 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 from stacksniff.models import DetectedEndpoint, ScanMeta, TechMatch
+from stacksniff.models import CollectedEvidence
 from stacksniff.models import ScanResult as StacksniffScanResult
 
 from scanner.models import ScanJob, ScanResult
@@ -15,6 +16,7 @@ from scanner.tasks import run_scan
 
 class ScanJobAPITests(APITestCase):
     def setUp(self):
+        cache.clear()  # prevent rate-limit bleed from HealthAndRateLimitTests (DEBT-1)
         # Create some initial jobs for list and detail tests
         self.job1 = ScanJob.objects.create(
             url="https://example.com",
@@ -197,6 +199,36 @@ class ScanJobAPITests(APITestCase):
         response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
+    def test_get_evidence_returns_required_keys(self):
+        """GET /api/scans/{id}/evidence/ returns raw_evidence with all 7 required keys."""
+        # Populate raw_evidence on the existing completed result
+        self.result2.raw_evidence = {
+            "headers": {"Server": "nginx"},
+            "cookies": {"session": "abc"},
+            "html": "<html></html>",
+            "js_globals": {"wp": "[object]"},
+            "network_requests": [{"url": "https://test.org/api", "method": "GET", "resource_type": "xhr"}],
+            "probed_paths": [],
+            "discovered_subdomains": [],
+        }
+        self.result2.save(update_fields=["raw_evidence"])
+
+        url = reverse("scan-get-evidence", kwargs={"pk": self.job2.id})
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("raw_evidence", response.data)
+        evidence = response.data["raw_evidence"]
+        for key in ("headers", "cookies", "html", "js_globals",
+                    "network_requests", "probed_paths", "discovered_subdomains"):
+            self.assertIn(key, evidence, msg=f"raw_evidence missing key: {key}")
+
+    def test_get_evidence_not_available(self):
+        """GET /api/scans/{id}/evidence/ returns 404 when result does not exist."""
+        url = reverse("scan-get-evidence", kwargs={"pk": self.job1.id})
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
     @patch("scanner.tasks.run_scan.delay")
     def test_shortcut_tech_sets_correct_flags(self, mock_run_scan_delay):
         mock_task = MagicMock()
@@ -324,6 +356,15 @@ class ScanJobCeleryTaskTests(APITestCase):
             openapi_spec_found=True,
             runtime_dependencies=[{"domain": "external.com"}],
             discovered_subdomains=[{"domain": "api.celerytest.com"}],
+            collected_evidence=CollectedEvidence(
+                headers={"Server": "nginx"},
+                cookies={"session": "abc"},
+                html="<html></html>",
+                js_globals={"React": "[object]"},
+                network_requests=[],
+                probed_paths=[],
+                discovered_subdomains=[{"domain": "api.celerytest.com"}],
+            ),
         )
 
     @patch("stacksniff.scanner.Scanner.scan", new_callable=AsyncMock)
@@ -359,6 +400,10 @@ class ScanJobCeleryTaskTests(APITestCase):
         self.assertEqual(scan_res.runtime_dependencies[0]["domain"], "external.com")
         self.assertEqual(scan_res.discovered_subdomains[0]["domain"], "api.celerytest.com")
         self.assertEqual(scan_res.fingerprints_version, "1.0")
+        # Verify raw_evidence was persisted
+        self.assertIn("headers", scan_res.raw_evidence)
+        self.assertIn("html", scan_res.raw_evidence)
+        self.assertEqual(scan_res.raw_evidence["headers"]["Server"], "nginx")
 
     @patch("stacksniff.scanner.Scanner.scan", new_callable=AsyncMock)
     def test_run_scan_task_failure(self, mock_scan):

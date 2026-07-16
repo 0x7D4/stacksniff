@@ -1,0 +1,14 @@
+$kind: http-request
+description: Run subdomain discovery shortcut (no browser process).
+url: "{{base_url}}/api/scan/subdomains/"
+method: POST
+headers:
+  Authorization: Token {{token}}
+  Content-Type: application/json
+body:
+  type: text
+  content: |-
+    {
+      "url": "https://stripe.com"
+    }
+order: 4000

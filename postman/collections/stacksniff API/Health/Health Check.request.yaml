@@ -1,0 +1,5 @@
+$kind: http-request
+description: Probe database and Celery worker health status. No authentication required.
+url: "{{base_url}}/api/health/"
+method: GET
+order: 1000

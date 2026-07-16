@@ -437,6 +437,7 @@ class Scanner:
             openapi_spec_found=bool(evidence.spec_endpoints),
             runtime_dependencies=evidence.runtime_dependencies,
             discovered_subdomains=evidence.discovered_subdomains,
+            collected_evidence=evidence,
         )
         cache.set(url, options, res)
         return res

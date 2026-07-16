@@ -344,6 +344,6 @@ async def test_subdomain_requests_included(mock_playwright) -> None:
 
     # Subdomain request must be present
     assert "https://api.example.com/api/v1/users" in request_urls
-    
+
     # Cross-origin request must be absent
     assert "https://google.com/api/v1" not in request_urls

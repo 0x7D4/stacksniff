@@ -264,6 +264,10 @@ class FrameworkProber:
         # Fire probes in batches of 50
         endpoints = await self._probe_all(capped_paths, redirect_baseline)
 
+        # Add implied techs to each endpoint for client-side matching (Phase 4)
+        for ep in endpoints:
+            ep["implied_techs"] = files_meta.get(ep.get("source_wordlist", ""), {}).get("tech_match", [])
+
         result.data["framework_endpoints"] = endpoints
         logger.info(
             "FrameworkProber: probed %d paths → %d findings on %s",

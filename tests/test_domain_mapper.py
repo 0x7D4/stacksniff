@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import asyncio
 import httpx
 import pytest
 
 from stacksniff.collectors.domain_mapper import DomainMapper
 from stacksniff.fingerprints import Fingerprint, FingerprintStore
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -233,12 +232,11 @@ async def test_subdomain_probe_dns_failure() -> None:
         mapper,
         "_fetch_crtsh_subdomains",
         new=AsyncMock(return_value=["nonexistent.aiori.in"]),
+    ), patch(
+        "httpx.AsyncClient.head",
+        new=AsyncMock(side_effect=httpx.ConnectError("DNS failure")),
     ):
-        with patch(
-            "httpx.AsyncClient.head",
-            new=AsyncMock(side_effect=httpx.ConnectError("DNS failure")),
-        ):
-            result = await mapper.collect()
+        result = await mapper.collect()
 
     subs = result.data.get("internal_subdomains", [])
     assert subs == [], f"Expected empty list, got {subs}"
@@ -956,6 +954,7 @@ async def test_hackertarget_is_tried_first() -> None:
             mock_resp.text = "api.example.com,1.2.3.4\ndev.example.com,5.6.7.8\n"
             return mock_resp
         elif "crt.sh" in url:
+            await asyncio.sleep(0.05)  # Let HackerTarget win
             mock_resp = MagicMock()
             mock_resp.status_code = 200
             mock_resp.json = lambda: [{"name_value": "api.example.com"}]

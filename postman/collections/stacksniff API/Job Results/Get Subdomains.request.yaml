@@ -1,0 +1,7 @@
+$kind: http-request
+description: Retrieve discovered subdomain list.
+url: "{{base_url}}/api/scans/{{scan_id}}/subdomains/"
+method: GET
+headers:
+  Authorization: Token {{token}}
+order: 4000

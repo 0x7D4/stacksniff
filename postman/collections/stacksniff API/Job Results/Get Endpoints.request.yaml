@@ -1,0 +1,7 @@
+$kind: http-request
+description: Retrieve detected API endpoint list.
+url: "{{base_url}}/api/scans/{{scan_id}}/endpoints/"
+method: GET
+headers:
+  Authorization: Token {{token}}
+order: 3000

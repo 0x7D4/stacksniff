@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
-import time
 from datetime import UTC, datetime
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from stacksniff.cache import ScanCache, get_cache
 from stacksniff.models import DetectedEndpoint, Evidence, ScanMeta, ScanResult, TechMatch
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @pytest.fixture
@@ -222,7 +224,7 @@ async def test_scanner_integration_with_caching(temp_cache_dir: Path) -> None:
         assert test_cache.stats()["hits"] == 1
 
         # 3. Scan with bypass should ignore cache (miss/skip), call collectors, and rewrite
-        res3 = await scanner.scan("https://test.com", browser=False, cache_bypass=True)
+        await scanner.scan("https://test.com", browser=False, cache_bypass=True)
         mock_header.return_value.collect.assert_called_once()
         # Hits should remain 1 (no cache lookup performed)
         assert test_cache.stats()["hits"] == 1

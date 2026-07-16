@@ -6,23 +6,23 @@ Tests use tmp_path for disk isolation and respx/unittest.mock for httpx mocking.
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
 import yaml
 
 from stacksniff.collectors.framework_prober import (
-    FrameworkProber,
-    _MAX_PROBES,
     _BATCH_SIZE,
     _CANARY_PATH,
-    _GENERIC_WORDLISTS,
+    _MAX_PROBES,
+    FrameworkProber,
 )
-from stacksniff.models import Evidence, TechMatch
+from stacksniff.models import TechMatch
 
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -1295,7 +1295,7 @@ def test_critical_paths_priority_ordering() -> None:
     # 3. /wp-content/themes/theme1 (framework entry, sorted by count ascending)
     with patch("stacksniff.collectors.framework_prober._MAX_PROBES", 3):
         capped = prober._apply_cap(paths_by_source, files_meta)
-        
+
         # Verify ordering
         paths = [path for _, path in capped]
         assert len(paths) == 3

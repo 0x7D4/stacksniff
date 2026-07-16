@@ -1,0 +1,13 @@
+# Use this workspace to collaborate
+workspace:
+  id: e191ccd8-fa46-4136-86a0-fab3e15011fb
+
+cloudResources:
+  collections:
+    ../postman/collections/stacksniff API: 3074fa9e-d53b-479a-8d78-f92bee6aca69
+
+# All resources in the `postman/` folder are automatically registered in Local View.
+# Point to additional files outside the `postman/` folder to register them individually. Example:
+#localResources:
+#  collections:
+#    - ../tests/E2E Test Collection/

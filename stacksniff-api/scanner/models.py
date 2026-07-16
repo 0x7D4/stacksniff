@@ -42,6 +42,7 @@ class ScanResult(models.Model):
     api_endpoints = models.JSONField(default=list)
     runtime_dependencies = models.JSONField(default=list)
     discovered_subdomains = models.JSONField(default=list)
+    raw_evidence = models.JSONField(default=dict, blank=True)
     openapi_spec_found = models.BooleanField(default=False)
     phases_completed = models.JSONField(default=list)
     rules_count = models.IntegerField(default=0)

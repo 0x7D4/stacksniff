@@ -1,0 +1,14 @@
+$kind: http-request
+description: Run technology fingerprinting shortcut (excludes subdomains and endpoints).
+url: "{{base_url}}/api/scan/tech/"
+method: POST
+headers:
+  Authorization: Token {{token}}
+  Content-Type: application/json
+body:
+  type: text
+  content: |-
+    {
+      "url": "https://stripe.com"
+    }
+order: 1000

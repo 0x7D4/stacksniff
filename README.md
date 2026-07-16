@@ -267,6 +267,41 @@ if __name__ == "__main__":
 
 ---
 
+## Django API Service (Local Host Setup)
+
+`stacksniff` includes a Django REST API service with an asynchronous Celery task queue for managing scans.
+
+### 1. Start the Redis Broker
+The Celery task queue requires a Redis broker. Launch a Redis container using Docker (ensure Docker Desktop is running):
+```bash
+docker run -d --name stacksniff-redis -p 6379:6379 redis
+```
+
+### 2. Apply Database Migrations
+Set up the local SQLite database by running migrations in the API directory:
+```bash
+cd stacksniff-api
+uv run python manage.py migrate
+```
+
+### 3. Start the Celery Worker
+Launch the Celery worker process to run tasks asynchronously. Use the `gevent` pool for optimal async concurrency (especially on Windows):
+```bash
+cd stacksniff-api
+uv run celery -A config worker --pool=gevent --concurrency=10 --loglevel=info
+```
+
+### 4. Start the Django API Server
+Launch the development API server using Uvicorn:
+```bash
+cd stacksniff-api
+uv run uvicorn config.asgi:application --host 127.0.0.1 --port 8000 --reload
+```
+
+The API is served at `http://127.0.0.1:8000/api/`. Refer to the [stacksniff API Guide](file:///c:/IIFON/stacksniff/stacksniff-api/API.md) for full integration details.
+
+---
+
 ## Detection Layers
 
 | Layer | Method | Confidence | Requires Browser |

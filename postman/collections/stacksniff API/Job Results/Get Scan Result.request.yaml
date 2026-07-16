@@ -1,0 +1,7 @@
+$kind: http-request
+description: Retrieve full scan output.
+url: "{{base_url}}/api/scans/{{scan_id}}/result/"
+method: GET
+headers:
+  Authorization: Token {{token}}
+order: 1000

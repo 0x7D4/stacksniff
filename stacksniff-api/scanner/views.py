@@ -259,6 +259,18 @@ class ScanJobViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+    @action(detail=True, methods=["get"], url_path="evidence")
+    def get_evidence(self, request, pk=None):
+        """Return raw_evidence for client-side matching."""
+        job = self.get_object()
+        try:
+            return Response({"raw_evidence": job.result.raw_evidence})
+        except ScanResult.DoesNotExist:
+            return Response(
+                {"error": f"Scan result is not available. Scan status: {job.status}"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
 
 # ---------------------------------------------------------------------------
 # Shortcut views (async — adrf.AsyncAPIView dispatch properly awaits handlers)

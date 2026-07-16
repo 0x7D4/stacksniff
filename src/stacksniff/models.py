@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from stacksniff.collectors.base import NetworkRequest
+    from stacksniff.models import CollectedEvidence as _CollectedEvidence
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,12 +69,15 @@ class ScanResult:
     openapi_spec_found: bool = field(default=False)
     runtime_dependencies: list[dict[str, Any]] = field(default_factory=list)
     discovered_subdomains: list[dict[str, Any]] = field(default_factory=list)
+    # ponytail: out-of-band field — not serialized to JSON, not stored in DB.
+    # Populated by Scanner.scan() so tasks.py can persist raw_evidence.
+    collected_evidence: _CollectedEvidence | None = field(default=None, compare=False)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert the ScanResult to a JSON-serializable dictionary."""
-        # Custom serialisation to handle datetime
         data = asdict(self)
         data["scan_time"] = self.scan_time.isoformat()
+        data.pop("collected_evidence", None)  # out-of-band; never serialized
         return data
 
     def to_json(self, indent: int = 2) -> str:
