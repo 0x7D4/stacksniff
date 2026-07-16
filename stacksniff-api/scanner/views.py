@@ -32,7 +32,6 @@ from django_ratelimit.core import is_ratelimited
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework.views import APIView
 
 from scanner.models import ScanJob, ScanResult
 from scanner.serializers import (
@@ -404,7 +403,7 @@ class HealthCheckView(AsyncAPIView):
                 timeout=3.0,
             )
             checks["celery"] = "ok" if workers else "no workers"
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("Health check Celery probe timed out")
             checks["celery"] = "error: timeout"
         except Exception as e:  # noqa: BLE001

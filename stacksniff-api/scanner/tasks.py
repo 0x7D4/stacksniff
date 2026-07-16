@@ -2,7 +2,6 @@ import asyncio
 import dataclasses
 import logging
 import threading
-import time
 
 from celery import shared_task
 from celery.signals import worker_process_init
@@ -61,7 +60,7 @@ def init_browser_pool(**kwargs) -> None:
 @shared_task(bind=True)
 def run_scan(self, job_id: str, force_rescan: bool = False) -> str:
     """Execute a scan job asynchronously.
-    
+
     If running under gevent monkey patching, uses a clean Python subprocess to
     avoid the Windows ProactorEventLoop deadlock. Otherwise, runs in-process on the
     persistent background event loop thread (ensuring unit tests and mocks work).
@@ -188,11 +187,11 @@ if __name__ == "__main__":
         try:
             # Import Popen cooperatively if gevent is running
             try:
-                from gevent.subprocess import Popen, PIPE
+                from gevent.subprocess import PIPE, Popen
             except ImportError:
-                from subprocess import Popen, PIPE
-            import sys
+                from subprocess import PIPE, Popen
             import json
+            import sys
 
             proc = Popen([sys.executable, "-c", script], stdout=PIPE, stderr=PIPE, text=True)
             try:

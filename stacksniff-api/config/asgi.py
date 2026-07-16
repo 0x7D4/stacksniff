@@ -10,10 +10,10 @@ Production (Gunicorn supervisor command):
         --timeout 120 --graceful-timeout 30
 """
 import os
-import environ
 from pathlib import Path
 
 import django
+import environ
 from django.core.asgi import get_asgi_application
 
 BASE_DIR = Path(__file__).resolve().parent.parent

@@ -6,8 +6,7 @@ from django.urls import reverse
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
-from stacksniff.models import DetectedEndpoint, ScanMeta, TechMatch
-from stacksniff.models import CollectedEvidence
+from stacksniff.models import CollectedEvidence, DetectedEndpoint, ScanMeta, TechMatch
 from stacksniff.models import ScanResult as StacksniffScanResult
 
 from scanner.models import ScanJob, ScanResult

@@ -284,7 +284,19 @@ cd stacksniff-api
 uv run python manage.py migrate
 ```
 
-### 3. Start the Celery Worker
+### 3. Create a User & Generate Auth Token
+Create a Django user and generate a DRF auth token for token-authenticated endpoints:
+```bash
+cd stacksniff-api
+# Create a new local user
+uv run python manage.py createsuperuser
+
+# Generate/retrieve a token for that user
+uv run python manage.py drf_create_token <username>
+```
+Copy the printed token (e.g., `4cad5d0b8bb668725fd8b4ac7c56c7b3a9d84478`) to use in Postman/headers.
+
+### 4. Start the Celery Worker
 Launch the Celery worker process to run tasks asynchronously. Use the `gevent` pool for optimal async concurrency (especially on Windows):
 ```bash
 cd stacksniff-api
