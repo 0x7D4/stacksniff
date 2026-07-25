@@ -214,6 +214,9 @@ setup_project() {
     log_info "Installing Playwright system dependencies..."
     uv run playwright install-deps chromium
 
+    log_info "Compiling technology signatures and SecLists database..."
+    uv run stacksniff update-fingerprints
+
     log_success "Project setup complete"
 }
 
@@ -274,6 +277,9 @@ STACKSNIFF_MAX_BROWSERS=${MAX_BROWSERS}
 STACKSNIFF_CACHE_TTL=${CACHE_TTL}
 CELERY_POOL=gevent
 CELERY_CONCURRENCY=10
+SECURE_SSL_REDIRECT=False
+SESSION_COOKIE_SECURE=False
+CSRF_COOKIE_SECURE=False
 EOF
 
     # --- Database migrations ---
@@ -533,7 +539,7 @@ print_summary() {
     printf "  ║  Token file:    %-45s║\n" "${INSTALL_DIR}/API_TOKEN.txt"
     echo "  ╠══════════════════════════════════════════════════════════════╣"
     echo "  ║  Frontend team — include in every request:                  ║"
-    printf "  ║  Authorization: Token %-39s║\n" "${token:0:39}"
+    printf "  ║  Authorization: Token %-40s║\n" "${token}"
     echo "  ╠══════════════════════════════════════════════════════════════╣"
     echo "  ║  Quick test (no auth):                                      ║"
     printf "  ║  curl http://%-48s║\n" "${ip}/api/health/"

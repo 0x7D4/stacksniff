@@ -4,6 +4,7 @@ from rest_framework.routers import DefaultRouter
 from scanner.views import (
     HealthCheckView,
     ScanJobViewSet,
+    ShortcutDependenciesView,
     ShortcutEndpointsView,
     ShortcutFullView,
     ShortcutSubdomainsView,
@@ -19,5 +20,6 @@ urlpatterns = [
     path("scan/full/", ShortcutFullView.as_view()),
     path("scan/endpoints/", ShortcutEndpointsView.as_view()),
     path("scan/subdomains/", ShortcutSubdomainsView.as_view()),
+    path("scan/dependencies/", ShortcutDependenciesView.as_view()),
     path("", include(router.urls)),
 ]

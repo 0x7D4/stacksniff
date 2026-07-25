@@ -361,6 +361,24 @@ class ShortcutSubdomainsView(ShortcutScanView):
     }
 
 
+class ShortcutDependenciesView(ShortcutScanView):
+    """Run the browser collector + DomainMapper to harvest runtime external dependencies.
+
+    scan_technologies and subdomains are both enabled so that:
+    - browser=True + scan_technologies=True  → need_js=True → browser launches
+    - subdomains=True                        → DomainMapper runs → runtime_dependencies populated
+
+    Endpoint probing is skipped to keep the scan fast (~25s).
+    """
+
+    PRESET = {
+        "scan_technologies": True,
+        "scan_subdomains": True,
+        "scan_endpoints": True,
+        "browser": True,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Health check (async — concurrent DB + Celery probes)
 # ---------------------------------------------------------------------------

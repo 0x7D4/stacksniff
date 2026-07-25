@@ -1,0 +1,14 @@
+$kind: http-request
+description: Run browser collector only to harvest third-party runtime dependencies (CDNs, external scripts). Fast (~20s). Retrieve results via GET /api/scans/{{scan_id}}/dependencies/
+url: "{{base_url}}/api/scan/dependencies/"
+method: POST
+headers:
+  Authorization: Token {{token}}
+  Content-Type: application/json
+body:
+  type: text
+  content: |-
+    {
+      "url": "https://stripe.com"
+    }
+order: 5000
