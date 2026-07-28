@@ -261,8 +261,18 @@ class FrameworkProber:
         # Detect CMS canonical-redirect baseline before probing
         redirect_baseline = await self._detect_redirect_baseline()
 
-        # Fire probes in batches of 50
-        endpoints = await self._probe_all(capped_paths, redirect_baseline)
+        # Fire probes in batches of 50 with an overall 30-second time budget cap
+        try:
+            endpoints = await asyncio.wait_for(
+                self._probe_all(capped_paths, redirect_baseline),
+                timeout=min(self._timeout, 30.0),
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "FrameworkProber: 30s time budget reached on %s; returning partial findings",
+                self._base_url,
+            )
+            endpoints = getattr(self, "_collected_endpoints", [])
 
         # Add implied techs to each endpoint for client-side matching (Phase 4)
         for ep in endpoints:
@@ -726,8 +736,10 @@ class FrameworkProber:
         """Fire all probes in batches of :data:`_BATCH_SIZE` using a shared client."""
         endpoints: list[dict[str, Any]] = []
 
+        self._collected_endpoints = endpoints
+
         async with httpx.AsyncClient(
-            timeout=self._timeout,
+            timeout=httpx.Timeout(min(self._timeout, 4.0)),
             follow_redirects=False,
             headers={"User-Agent": "stacksniff/1.0 (framework-prober)"},
             verify=False,

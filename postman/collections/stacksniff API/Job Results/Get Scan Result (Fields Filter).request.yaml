@@ -1,0 +1,17 @@
+$kind: http-request
+description: |-
+  Retrieve only specific result sections in one call using the ?fields= parameter.
+
+  Edit the fields value to any combination of:
+    technologies, endpoints, dependencies, subdomains, evidence
+
+  Metadata fields are always included in the response.
+url: "{{base_url}}/api/scans/{{scan_id}}/result/?fields=technologies,dependencies"
+method: GET
+headers:
+  Authorization: Token {{token}}
+queryParams:
+  - key: fields
+    value: technologies,dependencies
+    description: "Comma-separated fields to return. Valid: technologies, endpoints, dependencies, subdomains, evidence"
+order: 2000

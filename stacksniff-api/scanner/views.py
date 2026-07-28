@@ -59,6 +59,7 @@ def create_scan_job(validated_data):
     scan_technologies = validated_data.get("scan_technologies", True)
     scan_subdomains = validated_data.get("scan_subdomains", True)
     scan_endpoints = validated_data.get("scan_endpoints", True)
+    scan_dependencies = validated_data.get("scan_dependencies", True)
 
     # Create the ScanJob model entry
     job = ScanJob.objects.create(
@@ -70,6 +71,7 @@ def create_scan_job(validated_data):
             "scan_technologies": scan_technologies,
             "scan_subdomains": scan_subdomains,
             "scan_endpoints": scan_endpoints,
+            "scan_dependencies": scan_dependencies,
         },
     )
 
@@ -98,6 +100,7 @@ async def async_create_scan_job(validated_data):
     scan_technologies = validated_data.get("scan_technologies", True)
     scan_subdomains = validated_data.get("scan_subdomains", True)
     scan_endpoints = validated_data.get("scan_endpoints", True)
+    scan_dependencies = validated_data.get("scan_dependencies", True)
 
     job = await ScanJob.objects.acreate(
         url=url,
@@ -108,6 +111,7 @@ async def async_create_scan_job(validated_data):
             "scan_technologies": scan_technologies,
             "scan_subdomains": scan_subdomains,
             "scan_endpoints": scan_endpoints,
+            "scan_dependencies": scan_dependencies,
         },
     )
 
@@ -168,7 +172,35 @@ class ScanJobViewSet(viewsets.ModelViewSet):
                 headers={"Retry-After": "60"},
             )
 
-        serializer = ScanJobCreateSerializer(data=request.data)
+        # Merge query params into body data so scan-type flags can be toggled
+        # as checkable URL params in Postman. Body values take precedence when
+        # the same key appears in both places.
+        _FLAG_PARAMS = {"scan_technologies", "scan_subdomains", "scan_endpoints", "scan_dependencies"}
+        _ALL_BOOL_PARAMS = _FLAG_PARAMS | {"browser", "force_rescan"}
+        data = dict(request.data)
+
+        # Check if caller is using query parameters to control scan flags
+        using_query_flags = any(k in request.query_params for k in _ALL_BOOL_PARAMS)
+
+        for key in _ALL_BOOL_PARAMS:
+            if key in data:
+                # Body value explicitly provided
+                continue
+            if key in request.query_params:
+                raw = request.query_params[key].lower()
+                data[key] = raw not in {"false", "0", "no"}
+            elif using_query_flags and key in _FLAG_PARAMS:
+                # Key was omitted from query params (e.g. unchecked box in Postman)
+                data[key] = False
+
+        # If scan_dependencies is explicitly enabled, make sure browser, technologies, subdomains, and endpoints are on
+        if data.get("scan_dependencies"):
+            data["scan_technologies"] = True
+            data["scan_subdomains"] = True
+            data["scan_endpoints"] = True
+            data["browser"] = True
+
+        serializer = ScanJobCreateSerializer(data=data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -198,17 +230,96 @@ class ScanJobViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["get"], url_path="result")
     def get_result(self, request, pk=None):
-        """Return the full scan result if available."""
+        """Return scan result, optionally filtered to specific fields.
+
+        Query parameter
+        ---------------
+        ``fields`` — comma-separated list of result sections to include.
+        When omitted the full result is returned (backward-compatible).
+
+        Recognised aliases
+        ------------------
+        technologies  → technologies
+        endpoints     → api_endpoints
+        dependencies  → runtime_dependencies
+        subdomains    → discovered_subdomains
+        evidence      → raw_evidence
+
+        Metadata fields (id, url, scan_time, duration_seconds,
+        openapi_spec_found, phases_completed, rules_count,
+        fingerprints_version) are always included.
+
+        Example
+        -------
+        GET /api/scans/{id}/result/?fields=technologies,dependencies
+        """
+        # Map user-facing alias → serializer field name
+        _FIELD_ALIASES: dict[str, str] = {
+            "technologies": "technologies",
+            "endpoints": "api_endpoints",
+            "dependencies": "runtime_dependencies",
+            "subdomains": "discovered_subdomains",
+            "evidence": "raw_evidence",
+        }
+        # These are always present regardless of ?fields=
+        _ALWAYS_INCLUDED: set[str] = {
+            "id", "url", "scan_time", "duration_seconds",
+            "openapi_spec_found", "phases_completed",
+            "rules_count", "fingerprints_version",
+        }
+
         job = self.get_object()
         try:
             result = job.result
-            serializer = ScanResultSerializer(result)
-            return Response(serializer.data)
         except ScanResult.DoesNotExist:
             return Response(
                 {"error": f"Scan result is not available. Scan status: {job.status}"},
                 status=status.HTTP_404_NOT_FOUND,
             )
+
+        serializer = ScanResultSerializer(result)
+        data = serializer.data
+
+        # Apply field filtering when ?fields= is provided, or default to active job options
+        raw_fields = request.query_params.get("fields", "").strip()
+        if not raw_fields:
+            opts = job.options or {}
+            resolved = set()
+            if opts.get("scan_technologies", True):
+                resolved.add("technologies")
+            if opts.get("scan_subdomains", True):
+                resolved.add("discovered_subdomains")
+            if opts.get("scan_endpoints", True):
+                resolved.add("api_endpoints")
+            if opts.get("scan_dependencies", True):
+                resolved.add("runtime_dependencies")
+
+            filtered = {
+                key: value
+                for key, value in data.items()
+                if key in _ALWAYS_INCLUDED or key in resolved
+            }
+            return Response(filtered)
+
+        requested_aliases = {f.strip().lower() for f in raw_fields.split(",") if f.strip()}
+        unknown = requested_aliases - set(_FIELD_ALIASES.keys())
+        if unknown:
+            return Response(
+                {
+                    "error": f"Unknown field(s): {', '.join(sorted(unknown))}. "
+                             f"Valid options: {', '.join(sorted(_FIELD_ALIASES.keys()))}"
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Build the filtered response — metadata always included
+        resolved = {_FIELD_ALIASES[alias] for alias in requested_aliases}
+        filtered = {
+            key: value
+            for key, value in data.items()
+            if key in _ALWAYS_INCLUDED or key in resolved
+        }
+        return Response(filtered)
 
     @action(detail=True, methods=["get"], url_path="technologies")
     def get_technologies(self, request, pk=None):

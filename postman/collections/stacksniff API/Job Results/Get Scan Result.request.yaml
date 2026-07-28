@@ -1,7 +1,24 @@
 $kind: http-request
-description: Retrieve full scan output.
+description: |-
+  Retrieve scan output. Omit ?fields= for the full result.
+
+  Use ?fields= to request only specific sections in one call:
+  - technologies
+  - endpoints
+  - dependencies
+  - subdomains
+  - evidence
+
+  Metadata (id, url, scan_time, duration_seconds, phases_completed, etc.) is always included.
+
+  Example: ?fields=technologies,dependencies
 url: "{{base_url}}/api/scans/{{scan_id}}/result/"
 method: GET
 headers:
   Authorization: Token {{token}}
+queryParams:
+  - key: fields
+    value: technologies,dependencies,subdomains,endpoints,evidence
+    disabled: true
+    description: "Comma-separated list of fields to return. Valid values: technologies, endpoints, dependencies, subdomains, evidence. Omit this param to get the full result."
 order: 1000

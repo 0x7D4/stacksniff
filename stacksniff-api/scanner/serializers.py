@@ -15,6 +15,7 @@ class ScanResultSerializer(serializers.ModelSerializer):
             "api_endpoints",
             "runtime_dependencies",
             "discovered_subdomains",
+            "raw_evidence",
             "openapi_spec_found",
             "phases_completed",
             "rules_count",
@@ -49,4 +50,5 @@ class ScanJobCreateSerializer(serializers.Serializer):
     scan_technologies = serializers.BooleanField(default=True)
     scan_subdomains = serializers.BooleanField(default=True)
     scan_endpoints = serializers.BooleanField(default=True)
+    scan_dependencies = serializers.BooleanField(default=True, required=False)
 

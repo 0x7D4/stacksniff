@@ -6,7 +6,7 @@ workspace:
 
 cloudResources:
   collections:
-    ../postman/collections/stacksniff API: d716b7e8-140e-40d1-9e67-4b53d29991b5
+    ../postman/collections/stacksniff API: f002c1a0-a4fa-435c-a5ac-ec464f7a2dd2
 
 # All resources in the `postman/` folder are automatically registered in Local View.
 # Point to additional files outside the `postman/` folder to register them individually. Example:

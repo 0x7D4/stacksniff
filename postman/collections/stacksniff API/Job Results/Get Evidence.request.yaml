@@ -4,4 +4,4 @@ url: "{{base_url}}/api/scans/{{scan_id}}/evidence/"
 method: GET
 headers:
   Authorization: Token {{token}}
-order: 6000
+order: 7000

@@ -4,4 +4,4 @@ url: "{{base_url}}/api/scans/{{scan_id}}/technologies/"
 method: GET
 headers:
   Authorization: Token {{token}}
-order: 2000
+order: 3000

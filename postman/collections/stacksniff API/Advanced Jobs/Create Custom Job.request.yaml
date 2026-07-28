@@ -1,20 +1,48 @@
 $kind: http-request
-description: Create a scan job with full control over runtime options.
-url: "{{base_url}}/api/scans/"
+name: Create Custom Job
+description: |-
+  Create a scan job with full control over which scan types to run.
+
+  Tick/untick each query param checkbox to enable or disable that scan type.
+  The body only needs the target URL (and optionally a timeout).
+
+  Results retrieved via:
+    GET /api/scans/{{scan_id}}/result/?fields=technologies,subdomains,endpoints,dependencies
+url: "{{base_url}}/api/scans/?scan_technologies=true&scan_subdomains=true&browser=true"
 method: POST
 headers:
   Authorization: Token {{token}}
   Content-Type: application/json
+queryParams:
+  - key: scan_technologies
+    value: "true"
+    disabled: false
+    description: Detect tech stack (Next.js, React, Nginx, etc.)
+  - key: scan_subdomains
+    value: "true"
+    disabled: false
+    description: Discover subdomains via Certificate Transparency logs
+  - key: scan_endpoints
+    value: "true"
+    disabled: true
+    description: Detect API endpoints
+  - key: scan_dependencies
+    value: "true"
+    disabled: true
+    description: Harvest runtime third-party dependencies (CDNs, external scripts)
+  - key: browser
+    value: "true"
+    disabled: false
+    description: Launch headless Chromium (required for JS globals and network capture)
+  - key: force_rescan
+    value: "false"
+    disabled: true
+    description: Bypass cache and force a fresh scan
 body:
   type: text
   content: |-
     {
-      "url": "https://stripe.com",
-      "browser": true,
-      "timeout": 30.0,
-      "force_rescan": false,
-      "scan_technologies": true,
-      "scan_subdomains": false,
-      "scan_endpoints": true
+      "url": "https://portal.aiori.in",
+      "timeout": 30.0
     }
 order: 1000
